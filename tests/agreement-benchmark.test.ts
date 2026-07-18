@@ -99,6 +99,16 @@ test("gold parsing rejects an empty diff line that candidates cannot cite", () =
   assert.throws(() => parseAgreementBenchmarkGold(gold, input), /empty diff line that candidates cannot anchor/);
 });
 
+test("gold parsing rejects a non-clean case with no auditable decision", () => {
+  const input = loadInput("clean-alignment");
+  const gold = readJson<AgreementBenchmarkGold>(path.join(BENCH_ROOT, "cases", "clean-alignment.gold.json"));
+  gold.clean = false;
+  assert.throws(
+    () => parseAgreementBenchmarkGold(gold, input),
+    /non-clean benchmark case needs an auditable decision/
+  );
+});
+
 test("benchmark manifest paths cannot escape the benchmark root", () => {
   const manifest = (input: string) => ({
     version: AGREEMENT_BENCHMARK_VERSION,
@@ -279,6 +289,17 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     });
     assert.equal(malformedCollection.passes, false);
     assert.ok(malformedCollection.failures.some((failure) => /benchmark preference/.test(failure)));
+  }
+
+  for (const malformedCaseIds of [undefined, null, {}, [null], ["late-correction", "late-correction"]]) {
+    const malformedManifest = compareAgreementBenchmarkRuns({
+      required_case_ids: malformedCaseIds,
+      baseline,
+      product,
+      preferences
+    } as unknown as Parameters<typeof compareAgreementBenchmarkRuns>[0]);
+    assert.equal(malformedManifest.passes, false);
+    assert.ok(malformedManifest.failures.some((failure) => /required case ids/.test(failure)));
   }
 
   for (const arm of ["baseline", "product"] as const) {

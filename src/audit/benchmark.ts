@@ -19,6 +19,7 @@ import {
   AGREEMENT_STATES,
   DIFF_SIDES,
   agreementEvidenceFailures,
+  agreementNeedsHumanDecision,
   auditDiffCoordinate,
   agreementKindAllowsActor
 } from "./contract";
@@ -92,7 +93,7 @@ export function compareAgreementBenchmarkRuns(input: {
   const baselineMacro = macroByCase(baseline);
   const productMacro = macroByCase(product);
   const delta = productMacro - baselineMacro;
-  const requiredCaseIds = new Set(input.required_case_ids);
+  const requiredCaseIds = benchmarkCaseIdSet(input.required_case_ids, failures);
   const baselineCaseIds = new Set(baseline.map((score) => score.case_id));
   const productCaseIds = new Set(product.map((score) => score.case_id));
   if (!sameSet(requiredCaseIds, baselineCaseIds) || !sameSet(requiredCaseIds, productCaseIds)) {
@@ -305,6 +306,12 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
   if (gold.clean && agreements.some((agreement) => agreement.expected_state !== "fulfilled")) {
     throw new Error("a clean benchmark case cannot contain non-fulfilled agreements");
   }
+  if (!gold.clean && !agreements.some((agreement) => agreementNeedsHumanDecision({
+    state: agreement.expected_state,
+    materiality: agreement.materiality
+  }))) {
+    throw new Error("a non-clean benchmark case needs an auditable decision");
+  }
   return { version: AGREEMENT_BENCHMARK_VERSION, case_id: caseId, source: gold.source, clean: gold.clean, agreements };
 }
 
@@ -320,6 +327,16 @@ function macroByCase(scores: AgreementBenchmarkScore[]): number {
     grouped.set(score.case_id, values);
   }
   return mean([...grouped.values()].map(mean));
+}
+
+function benchmarkCaseIdSet(value: unknown, failures: string[]): Set<string> {
+  if (!Array.isArray(value) || value.some((caseId) => typeof caseId !== "string" || caseId.trim().length === 0)) {
+    failures.push("required case ids must be an array of non-empty strings");
+    return new Set();
+  }
+  const caseIds = new Set(value);
+  if (caseIds.size !== value.length) failures.push("required case ids must be unique");
+  return caseIds;
 }
 
 function validBenchmarkScores(

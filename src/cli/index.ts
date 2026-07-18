@@ -725,6 +725,10 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
   // manifest/packet left byte-identical. Without --cache nothing is read here.
   const cacheSnapshot = booleanFlag(parsed, "cache") ? await readCacheSnapshot(cwd, parsed) : undefined;
   const { collection, config } = await collect(parsed);
+  const isPrScope = reviewScope(parsed) === "pr";
+  // The product reset removed the human-facing change map. Clear the exact
+  // legacy artifact before either a cache hit or a full regeneration can return.
+  if (isPrScope) removeLegacyPrChangeMap(collection.outputDir);
   const artifactStore = createPipelineArtifactStoreForCollection(collection);
   const provider = providerFlag(parsed, config);
   const requestedModel = effectiveNarrativeModel(parsed, config);
@@ -855,7 +859,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     console.warn("Cached output is incomplete (evaluation.yaml missing/unreadable); regenerating to apply the --strict gate.");
   }
   const commands = [`review-surfaces ${parsed.command} ${process.argv.slice(3).join(" ")}`.trim()];
-  const isPrScope = reviewScope(parsed) === "pr";
   // PR-mode contract: scope/coverage/risks are DETERMINISTIC and the live provider
   // contributes only diff-scoped narrative plus advisory conversation review. So
   // in pr mode the whole-repo packet (a side
@@ -984,10 +987,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     ? buildHumanFactContext(cwd, writtenPacket, humanReviewDiff, config)
     : undefined;
   if (isPrScope) {
-    // The product reset removed the human-facing change map. Clear the exact
-    // legacy artifact on reruns so an old output directory cannot present a
-    // stale map as evidence from the current review.
-    fs.rmSync(path.join(collection.outputDir, "diagrams", "pr-change-impact.mmd"), { force: true });
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
     const baseEvaluation = humanReviewDiff && humanReviewDiff.files.length > 0
@@ -1077,6 +1076,13 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     printCockpitPointer(cwd, collection.outputDir);
   }
   return gateExit;
+}
+
+function removeLegacyPrChangeMap(outputDir: string): void {
+  const diagramsDirectory = path.join(outputDir, "diagrams");
+  const metadata = fs.lstatSync(diagramsDirectory, { throwIfNoEntry: false });
+  if (!metadata?.isDirectory() || metadata.isSymbolicLink()) return;
+  fs.rmSync(path.join(diagramsDirectory, "pr-change-impact.mmd"), { force: true });
 }
 
 // --review-scope pr|repo. PR mode emits/reads the diff-scoped pr_review_surface;
