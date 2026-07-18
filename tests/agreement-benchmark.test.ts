@@ -281,6 +281,22 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     assert.ok(malformedCollection.failures.some((failure) => /benchmark preference/.test(failure)));
   }
 
+  for (const arm of ["baseline", "product"] as const) {
+    for (const malformedScores of [undefined, null, "not-an-array"]) {
+      const malformedCollection = compareAgreementBenchmarkRuns({
+        required_case_ids: ["late-correction"],
+        baseline,
+        product,
+        preferences,
+        [arm]: malformedScores
+      } as unknown as Parameters<typeof compareAgreementBenchmarkRuns>[0]);
+      assert.equal(malformedCollection.passes, false);
+      assert.ok(malformedCollection.failures.some((failure) =>
+        failure === `${arm} benchmark scores must be an array`
+      ));
+    }
+  }
+
   const mixedModel = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
     baseline: baseline.map((run, index) => index === 2 ? { ...run, model_id: "model-b", model_config_hash: "config-b" } : run),

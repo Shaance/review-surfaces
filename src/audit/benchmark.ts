@@ -323,13 +323,17 @@ function macroByCase(scores: AgreementBenchmarkScore[]): number {
 }
 
 function validBenchmarkScores(
-  scores: AgreementBenchmarkScore[],
+  value: unknown,
   arm: "baseline" | "product",
   failures: string[]
 ): AgreementBenchmarkScore[] {
+  if (!Array.isArray(value)) {
+    failures.push(`${arm} benchmark scores must be an array`);
+    return [];
+  }
   const textFields = ["case_id", "run_id", "pair_id", "model_id", "model_config_hash"] as const;
   const metricFields = ["precision", "recall", "f1", "material_precision", "material_recall", "material_f1"] as const;
-  return scores.filter((score, index) => {
+  return value.filter((score, index) => {
     if (!score || typeof score !== "object" || Array.isArray(score)) {
       failures.push(`${arm} benchmark score ${index + 1} has invalid recorded fields`);
       return false;
