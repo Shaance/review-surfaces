@@ -143,6 +143,9 @@ test("a no-diff PR emits no sticky and removes a stale local comment artifact", 
 test("all --review-scope pr writes a deterministic, LLM-optional reviewer surface", () => {
   const tmp = setupChangedRepo();
   try {
+    const legacyChangeMap = path.join(tmp, ".review-surfaces", "diagrams", "pr-change-impact.mmd");
+    fs.mkdirSync(path.dirname(legacyChangeMap), { recursive: true });
+    fs.writeFileSync(legacyChangeMap, "stale human change map");
     const run = runCli(tmp, [...ALL_PR, "--provider", "mock"]);
     assert.equal(run.status, 0, run.stderr);
     // review-surfaces.HUMAN_REVIEW.15: `all` should point reviewers at the
@@ -658,12 +661,12 @@ test("all --review-scope pr writes a deterministic, LLM-optional reviewer surfac
     assertInlineApprovalBrief(tmp, deterministicComment.stdout);
     assert.doesNotMatch(deterministicComment.stderr, /not postable/);
     assert.doesNotMatch(deterministicComment.stdout, /\d+ satisfied, \d+ partial, \d+ missing/);
-    // The diagram artifact the surface advertises is actually materialized on disk.
-    if (surface.diagram) {
-      const diagramFile = path.join(tmp, ".review-surfaces", surface.diagram.path);
-      assert.ok(fs.existsSync(diagramFile), `surface.diagram.path ${surface.diagram.path} must be written`);
-      assert.equal(fs.readFileSync(diagramFile, "utf8"), surface.diagram.body);
-    }
+    assert.equal("diagram" in surface, false, "PR surfaces do not advertise the removed human change map");
+    assert.equal(
+      fs.existsSync(legacyChangeMap),
+      false,
+      "PR reruns delete rather than preserve the removed human change-map artifact"
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

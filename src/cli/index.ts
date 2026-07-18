@@ -984,6 +984,10 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     ? buildHumanFactContext(cwd, writtenPacket, humanReviewDiff, config)
     : undefined;
   if (isPrScope) {
+    // The product reset removed the human-facing change map. Clear the exact
+    // legacy artifact on reruns so an old output directory cannot present a
+    // stale map as evidence from the current review.
+    fs.rmSync(path.join(collection.outputDir, "diagrams", "pr-change-impact.mmd"), { force: true });
     // Evaluate the base ref in a throwaway worktree for the coverage delta
     // (best-effort: degrades to current-status when the base can't be evaluated).
     const baseEvaluation = humanReviewDiff && humanReviewDiff.files.length > 0
@@ -1010,13 +1014,6 @@ async function runAll(parsed: ParsedArgs): Promise<number> {
     persistedSurface = jsonSerializable(surface);
     assertValidPrSurface(cwd, persistedSurface);
     await writeJson(path.join(collection.outputDir, "pr_review_surface.json"), persistedSurface);
-    // Materialize the diagram artifact the surface advertises (surface.diagram.path),
-    // so a consumer following the advertised path finds the .mmd it points at.
-    if (persistedSurface.diagram) {
-      const diagramPath = path.join(collection.outputDir, persistedSurface.diagram.path);
-      fs.mkdirSync(path.dirname(diagramPath), { recursive: true });
-      await writeText(diagramPath, persistedSurface.diagram.body);
-    }
     if (persistedSurface.status === "blocked") {
       console.warn(`PR review surface is not ready (${persistedSurface.blocked_reason})`);
     }

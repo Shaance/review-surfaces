@@ -5,7 +5,6 @@ import { parseStructuredDiff } from "../collector/diff-hunks";
 import { EvaluationModel } from "../evaluation/evaluate";
 import { buildPrScopedCoverage } from "../evaluation/scoped-coverage";
 import { IntentModel } from "../intent/intent";
-import { buildPrChangeDiagram } from "../diagrams/pr-change-diagram";
 import { buildPrRiskCandidates } from "../risks/pr-risks";
 import { createReviewAreaMatcher, ReviewArea } from "../review-areas/areas";
 import { buildPrScope, isTestPath } from "../scope/pr-scope";
@@ -14,7 +13,7 @@ import { inspectAndRedactSecrets } from "../privacy/secrets";
 
 // ---------------------------------------------------------------------------
 // PR review surface assembly. Runs the deterministic diff-scoped facts
-// (scope -> coverage delta -> risks -> change diagram) and packages them into a
+// (scope -> coverage delta -> risks) and packages them into a
 // PrReviewSurfaceModel. Provider prose is optional enrichment on the human
 // artifact; it is deliberately not duplicated in this lower-level sidecar.
 // ---------------------------------------------------------------------------
@@ -74,8 +73,6 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     repositoryTestAreas
   });
 
-  const diagram = buildPrChangeDiagram({ scope, risks });
-
   // No changed files -> nothing to review. Block (don't post an empty surface),
   // skip the LLM call entirely.
   if (scope.changed_files.length === 0) {
@@ -87,8 +84,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
       change_context: changeContext,
       scope,
       coverage,
-      risks,
-      diagram
+      risks
     };
   }
 
@@ -102,8 +98,7 @@ export async function assemblePrReviewSurface(input: AssemblePrSurfaceInput): Pr
     change_context: changeContext,
     scope,
     coverage,
-    risks,
-    diagram
+    risks
   };
 }
 

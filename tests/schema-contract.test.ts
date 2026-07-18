@@ -1408,12 +1408,6 @@ test("pr_surface rejects malformed or unknown values throughout every nested ret
           suggested_checks: ["Inspect the rendered GitHub comment in dark mode."]
         }
       ]
-    },
-    diagram: {
-      path: "diagrams/pr-change-impact.mmd",
-      status: "valid",
-      body: "flowchart LR\n  A --> B",
-      warnings: []
     }
   };
 
@@ -1434,8 +1428,7 @@ test("pr_surface rejects malformed or unknown values throughout every nested ret
     { name: "empty risk candidate", mutate: (surface) => { surface.risks.candidates[0] = {}; } },
     { name: "unknown risk field", mutate: (surface) => { surface.risks.candidates[0].owner = "security"; } },
     { name: "malformed risk evidence", mutate: (surface) => { surface.risks.candidates[0].evidence = [null]; } },
-    { name: "unknown diagram field", mutate: (surface) => { surface.diagram.format = "mermaid"; } },
-    { name: "malformed diagram warning", mutate: (surface) => { surface.diagram.warnings = [null]; } }
+    { name: "removed diagram surface", mutate: (surface) => { surface.diagram = {}; } }
   ];
 
   for (const testCase of cases) {
