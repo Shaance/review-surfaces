@@ -4,7 +4,7 @@ import path from "node:path";
 import type { AgreementAuditInput, AgreementCandidate } from "../src/audit/contract";
 import { groundAgreementAudit } from "../src/audit/grounding";
 import { parseAgreementAuditCandidate, parseAgreementAuditInput } from "../src/audit/parse";
-import { safeMarkdownEvidence } from "../src/audit/presentation-safety";
+import { safeMarkdownCode, safeMarkdownEvidence } from "../src/audit/presentation-safety";
 import { renderAgreementAuditMarkdown } from "../src/audit/render";
 import {
   AGREEMENT_BENCH_ROOT as BENCH_ROOT,
@@ -330,6 +330,11 @@ test("renderer preserves significant whitespace in exact evidence", () => {
   assert.ok(markdown.includes("`" + JSON.stringify(input.diff[0].text) + "`"));
   assert.doesNotMatch(markdown, /\n## forged heading/u);
   assert.notEqual(safeMarkdownEvidence("<tag>"), safeMarkdownEvidence("&lt;tag&gt;"));
+});
+
+test("renderer keeps backtick-led paths inside literal code spans", () => {
+  assert.equal(safeMarkdownCode("`danger`"), "`` `danger` ``");
+  assert.equal(safeMarkdownCode("normal.ts"), "`normal.ts`");
 });
 
 test("whitespace-only reviewed lines remain citable as exact evidence", () => {

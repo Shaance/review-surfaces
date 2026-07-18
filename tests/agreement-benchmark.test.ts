@@ -146,9 +146,9 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     pair_id: "pair-1",
     model_id: "model-a",
     model_config_hash: "config-a",
-    input_hash: "input-a",
+    input_hash: "1".repeat(64),
     gold_sha256: "a".repeat(64),
-    output_hash: "output-a",
+    output_hash: "2".repeat(64),
     generation_ms: 1
   };
   const score = scoreAgreementBenchmarkRun(audit, gold, adjudication, runMetadata);
@@ -189,7 +189,7 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     ...runMetadata,
     run_id: "unrelated-evidence",
     pair_id: "unrelated-evidence",
-    output_hash: "output-unrelated-evidence"
+    output_hash: "4".repeat(64)
   });
   assert.ok(unrelatedEvidenceScore.material_f1 < 1);
   assert.equal(unrelatedEvidenceScore.exact_citation_gate, false);
@@ -205,17 +205,22 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     ...runMetadata,
     run_id: "over-cited",
     pair_id: "over-cited",
-    output_hash: "output-over-cited"
+    output_hash: "5".repeat(64)
   });
   assert.ok(overCitedScore.material_f1 < 1);
 
   const baseline = [1, 2, 3].map((run) => ({ ...score, run_id: `baseline-${run}`, pair_id: `pair-${run}`, material_f1: 0.7 }));
-  const product = [1, 2, 3].map((run) => ({ ...score, run_id: `product-${run}`, pair_id: `pair-${run}` }));
+  const product = [1, 2, 3].map((run) => ({
+    ...score,
+    run_id: `product-${run}`,
+    pair_id: `pair-${run}`,
+    output_hash: "3".repeat(64)
+  }));
   const preferences = [1, 2, 3].map((run) => ({
     case_id: "late-correction",
     pair_id: `pair-${run}`,
-    baseline_output_hash: "output-a",
-    product_output_hash: "output-a",
+    baseline_output_hash: "2".repeat(64),
+    product_output_hash: "3".repeat(64),
     decision_time_ms: 100,
     preferred: run === 3 ? "baseline" as const : "product" as const
   }));
@@ -238,10 +243,21 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     baseline,
     product,
     preferences: preferences.map((preference, index) =>
-      index === 0 ? { ...preference, product_output_hash: "different-output" } : preference
+      index === 0 ? { ...preference, product_output_hash: "d".repeat(64) } : preference
     )
   });
   assert.ok(unboundPreference.failures.some((failure) => /not bound to the scored outputs/.test(failure)));
+
+  const unknownPairPreference = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product,
+    preferences: preferences.map((preference, index) =>
+      index === 0 ? { ...preference, pair_id: "unknown-pair" } : preference
+    )
+  });
+  assert.ok(unknownPairPreference.failures.some((failure) => /not bound to the scored outputs/.test(failure)));
+  assert.ok(!unknownPairPreference.failures.some((failure) => /identical outputs require a tie/.test(failure)));
 
   const malformedPreference = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
@@ -264,8 +280,8 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
 
   const mixedInput = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
-    baseline: baseline.map((run, index) => index === 2 ? { ...run, input_hash: "input-b" } : run),
-    product: product.map((run, index) => index === 2 ? { ...run, input_hash: "input-b" } : run),
+    baseline: baseline.map((run, index) => index === 2 ? { ...run, input_hash: "b".repeat(64) } : run),
+    product: product.map((run, index) => index === 2 ? { ...run, input_hash: "b".repeat(64) } : run),
     preferences
   });
   assert.ok(mixedInput.failures.some((failure) => /one frozen input across all runs/.test(failure)));
@@ -285,6 +301,28 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
     preferences
   });
   assert.ok(invalidGoldDigest.failures.some((failure) => /invalid recorded fields/.test(failure)));
+
+  for (const field of ["input_hash", "output_hash"] as const) {
+    const invalidHash = compareAgreementBenchmarkRuns({
+      required_case_ids: ["late-correction"],
+      baseline,
+      product: product.map((run, index) => index === 0 ? { ...run, [field]: "not-a-digest" } : run),
+      preferences
+    });
+    assert.ok(invalidHash.failures.some((failure) => /invalid recorded fields/.test(failure)));
+  }
+
+  const identicalOutputPreference = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    baseline,
+    product: product.map((run) => ({ ...run, output_hash: "2".repeat(64) })),
+    preferences: preferences.map((preference) => ({
+      ...preference,
+      product_output_hash: "2".repeat(64),
+      preferred: "product" as const
+    }))
+  });
+  assert.ok(identicalOutputPreference.failures.some((failure) => /identical outputs require a tie/.test(failure)));
 
   const invalidRecordedScore = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],

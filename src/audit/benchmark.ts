@@ -156,6 +156,9 @@ export function compareAgreementBenchmarkRuns(input: {
       preference.product_output_hash !== expected.product) {
       failures.push(`${preference.case_id}/${preference.pair_id} preference is not bound to the scored outputs`);
     }
+    if (expected && expected.baseline === expected.product && preference.preferred !== "tie") {
+      failures.push(`${preference.case_id}/${preference.pair_id} identical outputs require a tie preference`);
+    }
     if (!Number.isFinite(preference.decision_time_ms) || preference.decision_time_ms <= 0) {
       failures.push(`${preference.case_id}/${preference.pair_id} preference needs a positive decision time`);
     }
@@ -327,7 +330,7 @@ function validBenchmarkScores(
   arm: "baseline" | "product",
   failures: string[]
 ): AgreementBenchmarkScore[] {
-  const textFields = ["case_id", "run_id", "pair_id", "model_id", "model_config_hash", "input_hash", "output_hash"] as const;
+  const textFields = ["case_id", "run_id", "pair_id", "model_id", "model_config_hash"] as const;
   const metricFields = ["precision", "recall", "f1", "material_precision", "material_recall", "material_f1"] as const;
   return scores.filter((score, index) => {
     if (!score || typeof score !== "object" || Array.isArray(score)) {
@@ -341,7 +344,8 @@ function validBenchmarkScores(
     const validMetrics = metricFields.every((field) =>
       typeof record[field] === "number" && Number.isFinite(record[field]) && (record[field] as number) >= 0 && (record[field] as number) <= 1
     );
-    const valid = validText && isSha256(record.gold_sha256) && validMetrics &&
+    const valid = validText && isSha256(record.input_hash) && isSha256(record.gold_sha256) &&
+      isSha256(record.output_hash) && validMetrics &&
       typeof record.generation_ms === "number" && Number.isFinite(record.generation_ms) && record.generation_ms >= 0 &&
       typeof record.exact_citation_gate === "boolean" && typeof record.clean_case_gate === "boolean" &&
       Array.isArray(record.failures) && record.failures.every((failure) => typeof failure === "string");
