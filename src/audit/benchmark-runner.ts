@@ -19,7 +19,6 @@ import { renderAgreementAuditMarkdown } from "./render";
 export interface AgreementBenchmarkGenerationRequest {
   pair_id: string;
   run_number: number;
-  mode: AuditPromptMode;
   prompt: string;
 }
 
@@ -111,7 +110,7 @@ export async function runAgreementBenchmarkPair(
       if (control.aborted) throw new Error("benchmark generation aborted after another case failed");
       const pairId = `pair-${runNumber}`;
       const started = Date.now();
-      const candidateValue = await options.generate({ pair_id: pairId, run_number: runNumber, mode, prompt });
+      const candidateValue = await options.generate({ pair_id: pairId, run_number: runNumber, prompt });
       const candidate = parseAgreementAuditCandidate(candidateValue);
       const audit = groundAgreementAudit(prepared.input, candidate);
       const markdown = renderAgreementAuditMarkdown(audit);
@@ -136,7 +135,8 @@ export async function runAgreementBenchmarkPair(
     return [entry.id, gold] as const;
   }));
 
-  const completed = await mapWithConcurrency(generatedCases, concurrency, async (generatedCase, control) => {
+  const adjudicationOrder = blindedAdjudicationOrder(generatedCases, manifest.cases.map((entry) => entry.id));
+  const completed = await mapWithConcurrency(adjudicationOrder, concurrency, async (generatedCase, control) => {
     const { entry, generated, mode } = generatedCase;
     const gold = goldByCase.get(entry.id)!;
     const scores: AgreementBenchmarkScore[] = [];
@@ -169,12 +169,27 @@ export async function runAgreementBenchmarkPair(
     return { mode, scores, artifacts };
   });
 
+  const caseIds = manifest.cases.map((entry) => entry.id);
   const arm = (mode: AuditPromptMode): AgreementBenchmarkArmResult => ({
-    case_ids: manifest.cases.map((entry) => entry.id),
+    case_ids: caseIds,
     scores: completed.filter((result) => result.mode === mode).flatMap((result) => result.scores),
     artifacts: completed.filter((result) => result.mode === mode).flatMap((result) => result.artifacts)
   });
   return { baseline: arm("plain-agent"), product: arm("review-surfaces") };
+}
+
+function blindedAdjudicationOrder(generatedCases: GeneratedCase[], caseIds: string[]): GeneratedCase[] {
+  const byCase = new Map<string, GeneratedCase[]>();
+  for (const generatedCase of generatedCases) {
+    const cases = byCase.get(generatedCase.entry.id) ?? [];
+    cases.push(generatedCase);
+    byCase.set(generatedCase.entry.id, cases);
+  }
+  return caseIds.flatMap((caseId) => {
+    const cases = byCase.get(caseId);
+    if (cases?.length !== 2) throw new Error(`benchmark case ${caseId} is missing an arm`);
+    return crypto.randomInt(2) === 0 ? cases : [cases[1], cases[0]];
+  });
 }
 
 function readJson(file: string): unknown {

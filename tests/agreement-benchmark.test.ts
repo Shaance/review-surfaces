@@ -270,6 +270,17 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   assert.equal(malformedPreference.passes, false);
   assert.ok(malformedPreference.failures.some((failure) => /preference outcome is invalid/.test(failure)));
 
+  for (const malformedPreferences of [undefined, null, [null]]) {
+    const malformedCollection = compareAgreementBenchmarkRuns({
+      required_case_ids: ["late-correction"],
+      baseline,
+      product,
+      preferences: malformedPreferences as unknown as typeof preferences
+    });
+    assert.equal(malformedCollection.passes, false);
+    assert.ok(malformedCollection.failures.some((failure) => /benchmark preference/.test(failure)));
+  }
+
   const mixedModel = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],
     baseline: baseline.map((run, index) => index === 2 ? { ...run, model_id: "model-b", model_config_hash: "config-b" } : run),
@@ -369,6 +380,7 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
     model_config_hash: "same-config",
     generate: async (request) => {
       assert.equal("case_id" in request, false);
+      assert.equal("mode" in request, false);
       const { prompt } = request;
       seenPrompts.push(prompt);
       assert.ok(!prompt.includes('"expected_state"'));
@@ -431,6 +443,33 @@ test("six-case runner keeps gold behind generation and cannot pass a tied plain-
     })
   });
   assert.ok(missingCase.failures.some((failure) => /manifest case set/.test(failure)));
+});
+
+test("benchmark adjudication interleaves secretly ordered arms and returns stable arm order", async () => {
+  const adjudicationOrder: string[] = [];
+  const { baseline, product } = await runAgreementBenchmarkPair({
+    root: BENCH_ROOT,
+    model_id: "fake-model",
+    model_config_hash: "same-config",
+    generate: async ({ prompt }) => ({
+      ...emptyCandidate(),
+      final_goal: {
+        text: prompt.startsWith("Review the coding-agent") ? "plain-marker" : "product-marker",
+        conversation_event_ids: ["u1"]
+      }
+    }),
+    adjudicate: async ({ audit }) => {
+      adjudicationOrder.push(audit.final_goal!.text);
+      return emptyAdjudication();
+    }
+  });
+  for (let index = 0; index < adjudicationOrder.length; index += 6) {
+    const caseOrder = adjudicationOrder.slice(index, index + 6);
+    assert.equal(caseOrder.filter((marker) => marker === "plain-marker").length, 3);
+    assert.equal(caseOrder.filter((marker) => marker === "product-marker").length, 3);
+  }
+  assert.deepEqual(baseline.scores.map((score) => score.case_id), baseline.case_ids.flatMap((caseId) => [caseId, caseId, caseId]));
+  assert.deepEqual(product.scores.map((score) => score.case_id), product.case_ids.flatMap((caseId) => [caseId, caseId, caseId]));
 });
 
 test("concurrent benchmark generation finishes before any hidden gold is exposed", async () => {

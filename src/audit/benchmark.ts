@@ -26,6 +26,15 @@ import {
 const PREFERENCE_OUTCOMES = ["product", "baseline", "tie"] as const;
 type PreferenceOutcome = (typeof PREFERENCE_OUTCOMES)[number];
 
+interface AgreementBenchmarkPreference {
+  case_id: string;
+  pair_id: string;
+  baseline_output_hash: string;
+  product_output_hash: string;
+  decision_time_ms: number;
+  preferred: PreferenceOutcome;
+}
+
 export interface AgreementBenchmarkManifest {
   version: typeof AGREEMENT_BENCHMARK_VERSION;
   cases: Array<{
@@ -74,18 +83,12 @@ export function compareAgreementBenchmarkRuns(input: {
   required_case_ids: string[];
   baseline: AgreementBenchmarkScore[];
   product: AgreementBenchmarkScore[];
-  preferences: Array<{
-    case_id: string;
-    pair_id: string;
-    baseline_output_hash: string;
-    product_output_hash: string;
-    decision_time_ms: number;
-    preferred: PreferenceOutcome;
-  }>;
+  preferences: AgreementBenchmarkPreference[];
 }): AgreementBenchmarkComparison {
   const failures: string[] = [];
   const baseline = validBenchmarkScores(input.baseline, "baseline", failures);
   const product = validBenchmarkScores(input.product, "product", failures);
+  const preferences = validBenchmarkPreferences(input.preferences, failures);
   const baselineMacro = macroByCase(baseline);
   const productMacro = macroByCase(product);
   const delta = productMacro - baselineMacro;
@@ -145,12 +148,12 @@ export function compareAgreementBenchmarkRuns(input: {
       failures.push("product loses the large-agreement case");
     }
   }
-  const preferenceKeys = input.preferences.map((preference) => `${preference.case_id}\0${preference.pair_id}`);
+  const preferenceKeys = preferences.map((preference) => `${preference.case_id}\0${preference.pair_id}`);
   if (new Set(preferenceKeys).size !== preferenceKeys.length ||
     !sameSet(expectedPreferenceKeys, new Set(preferenceKeys))) {
     failures.push("every paired run needs exactly one blinded preference judgment");
   }
-  for (const preference of input.preferences) {
+  for (const preference of preferences) {
     const expected = expectedPreferenceHashes.get(`${preference.case_id}\0${preference.pair_id}`);
     if (!expected || preference.baseline_output_hash !== expected.baseline ||
       preference.product_output_hash !== expected.product) {
@@ -159,16 +162,10 @@ export function compareAgreementBenchmarkRuns(input: {
     if (expected && expected.baseline === expected.product && preference.preferred !== "tie") {
       failures.push(`${preference.case_id}/${preference.pair_id} identical outputs require a tie preference`);
     }
-    if (!Number.isFinite(preference.decision_time_ms) || preference.decision_time_ms <= 0) {
-      failures.push(`${preference.case_id}/${preference.pair_id} preference needs a positive decision time`);
-    }
-    if (!PREFERENCE_OUTCOMES.includes(preference.preferred)) {
-      failures.push(`${preference.case_id}/${preference.pair_id} preference outcome is invalid`);
-    }
   }
-  const productPreferences = input.preferences.filter((preference) => preference.preferred === "product").length;
-  const baselinePreferences = input.preferences.filter((preference) => preference.preferred === "baseline").length;
-  const ties = input.preferences.filter((preference) => preference.preferred === "tie").length;
+  const productPreferences = preferences.filter((preference) => preference.preferred === "product").length;
+  const baselinePreferences = preferences.filter((preference) => preference.preferred === "baseline").length;
+  const ties = preferences.filter((preference) => preference.preferred === "tie").length;
   if (baseline.some((score) => score.failures.length > 0)) failures.push("one or more baseline runs failed a case gate");
   if (product.some((score) => score.failures.length > 0)) failures.push("one or more product runs failed a case gate");
   if (product.some((score) => !score.exact_citation_gate)) failures.push("product failed the exact-citation gate");
@@ -351,6 +348,36 @@ function validBenchmarkScores(
       Array.isArray(record.failures) && record.failures.every((failure) => typeof failure === "string");
     if (!valid) failures.push(`${arm} benchmark score ${index + 1} has invalid recorded fields`);
     return valid;
+  });
+}
+
+function validBenchmarkPreferences(value: unknown, failures: string[]): AgreementBenchmarkPreference[] {
+  if (!Array.isArray(value)) {
+    failures.push("benchmark preferences must be an array");
+    return [];
+  }
+  return value.flatMap((preference, index) => {
+    if (!preference || typeof preference !== "object" || Array.isArray(preference)) {
+      failures.push(`benchmark preference ${index + 1} has invalid recorded fields`);
+      return [];
+    }
+    const record = preference as Record<string, unknown>;
+    const label = typeof record.case_id === "string" && typeof record.pair_id === "string"
+      ? `${record.case_id}/${record.pair_id}`
+      : `benchmark preference ${index + 1}`;
+    let valid = ["case_id", "pair_id"].every((field) =>
+      typeof record[field] === "string" && (record[field] as string).trim().length > 0
+    ) && isSha256(record.baseline_output_hash) && isSha256(record.product_output_hash);
+    if (!valid) failures.push(`benchmark preference ${index + 1} has invalid recorded fields`);
+    if (!Number.isFinite(record.decision_time_ms) || (record.decision_time_ms as number) <= 0) {
+      failures.push(`${label} preference needs a positive decision time`);
+      valid = false;
+    }
+    if (!PREFERENCE_OUTCOMES.includes(record.preferred as PreferenceOutcome)) {
+      failures.push(`${label} preference outcome is invalid`);
+      valid = false;
+    }
+    return valid ? [record as unknown as AgreementBenchmarkPreference] : [];
   });
 }
 
