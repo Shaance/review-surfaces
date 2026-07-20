@@ -360,21 +360,21 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
   }
 });
 
-test("integrated agreement audit reports completeness-stage privacy stops", async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-audit-completeness-privacy-"));
+test("integrated agreement audit respects provider privacy boundaries", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-audit-provider-privacy-"));
   try {
-    for (const scenario of ["prompt", "provider"] as const) {
+    for (const scenario of ["offline", "prompt", "provider"] as const) {
       const outputDir = path.join(root, scenario);
       fs.mkdirSync(outputDir);
-      let calls = 0;
+      const secret = `ghp_${"a".repeat(36)}`;
+      const secretStatement = `Implement the change without exposing ${secret}.`;
+      const statement = scenario === "provider" ? "Implement the reviewed change." : secretStatement;
+      const prompts: string[] = [];
       const provider: ReasoningProvider = {
-        name: "ai-sdk",
-        async generateStructured(stage) {
-          calls += 1;
+        name: scenario === "offline" ? "agent-file" : "ai-sdk",
+        async generateStructured(stage, prompt) {
+          prompts.push(prompt);
           if (stage === "agreement-audit") {
-            const statement = scenario === "prompt"
-              ? `Implement the change without exposing ghp_${"a".repeat(36)}.`
-              : "Implement the reviewed change.";
             return {
               ok: true,
               data: {
@@ -395,19 +395,46 @@ test("integrated agreement audit reports completeness-stage privacy stops", asyn
               }
             };
           }
+          if (scenario === "offline") {
+            return {
+              ok: true,
+              data: {
+                complete: true,
+                dispositions: [{
+                  event_id: "u1",
+                  disposition: "represented",
+                  agreement_keys: ["change"]
+                }],
+                missing_agreements: [],
+                limitations: []
+              }
+            };
+          }
           return { ok: false, reason: "privacy_block" };
         }
       };
+      const collection = minimalAuditCollection(outputDir);
+      if (scenario === "offline") {
+        collection.conversationSources![0].events[0].summary = secretStatement;
+      }
       const result = await runIntegratedAgreementAudit({
-        collection: minimalAuditCollection(outputDir),
+        collection,
         provider,
         explicitConversationScope: "complete"
       });
+      if (scenario === "offline") {
+        assert.deepEqual(prompts, ["", ""]);
+        assert.equal(result.privacyBlocked, false);
+        assert.equal(result.audit.completeness.structurally_verified, true);
+        assert.ok(result.audit.completeness.confirmation_token);
+        assert.ok(result.audit.limitations.every((limitation) => !/blocked.*secret material/i.test(limitation)));
+        continue;
+      }
       assert.equal(result.audit.status, scenario === "provider" ? "needs_human_decision" : "cannot_audit");
       assert.equal(result.privacyBlocked, true);
       assert.equal(integratedAgreementAuditExitCode(result), ExitCodes.privacyBlocked);
       assert.ok(result.audit.limitations.some((limitation) => /completeness pass was blocked/i.test(limitation)));
-      assert.equal(calls, scenario === "prompt" ? 1 : 2);
+      assert.equal(prompts.length, scenario === "prompt" ? 1 : 2);
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

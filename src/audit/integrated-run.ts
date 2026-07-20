@@ -123,7 +123,7 @@ export async function runIntegratedAgreementAudit(
     try {
       const completenessResult = await options.provider.generateStructured(
         "agreement-completeness",
-        buildCompletenessPrompt(input, candidate),
+        remoteProvider ? buildCompletenessPrompt(input, candidate) : "",
         AGREEMENT_COMPLETENESS_SCHEMA,
         { remotePrivacyBlocked: options.collection.privacy.remote_provider_blocked }
       );
@@ -189,7 +189,7 @@ async function generateAgreementCandidate(
   }
   let prompt: string;
   try {
-    prompt = buildAuditPrompt(input, "review-surfaces");
+    prompt = remoteProvider ? buildAuditPrompt(input, "review-surfaces") : "";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/secret material/iu.test(message)) {
