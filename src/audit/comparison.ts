@@ -49,14 +49,15 @@ export function compareAgreementAuditDecisions(
   const unmatchedPrevious = sorted(previousDecisions
     .filter((_, index) => !matchedPrevious.has(index))
     .map((decision) => decision.key));
+  const currentAuditIsConclusive = current.status !== "cannot_audit" && current.completeness.verified;
   return {
     previous_head_sha: previous.head_sha,
     new_decision_keys: sorted(currentDecisions
       .filter((_, index) => !matchedCurrent.has(index))
       .map((decision) => decision.key)),
     unchanged_decision_keys: sorted(unchanged),
-    resolved_decision_keys: current.completeness.verified ? unmatchedPrevious : [],
-    unverified_previous_decision_keys: current.completeness.verified ? [] : unmatchedPrevious
+    resolved_decision_keys: currentAuditIsConclusive ? unmatchedPrevious : [],
+    unverified_previous_decision_keys: currentAuditIsConclusive ? [] : unmatchedPrevious
   };
 }
 
@@ -80,6 +81,8 @@ function decisionIdentity(
 ): string {
   return [
     agreement.kind,
+    agreement.state,
+    agreement.materiality,
     ...[...new Set(agreement.conversation_event_ids)].sort(compareStrings)
   ].join("\0");
 }

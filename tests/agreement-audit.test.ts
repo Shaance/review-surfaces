@@ -12,6 +12,7 @@ import {
 import { safeMarkdownCode, safeMarkdownEvidence } from "../src/audit/presentation-safety";
 import { renderAgreementAuditMarkdown } from "../src/audit/render";
 import { compareAgreementAuditDecisions } from "../src/audit/comparison";
+import { agreementCompletenessConfirmationToken } from "../src/audit/completeness";
 import { buildCompletenessPrompt } from "../src/audit/prompt";
 import {
   AGREEMENT_BENCH_ROOT as BENCH_ROOT,
@@ -148,6 +149,34 @@ test("a rerun resolves prior decisions only after current extraction is verified
   assert.deepEqual(verifiedComparison.unverified_previous_decision_keys, []);
 });
 
+test("a structurally verified but inconclusive rerun keeps prior decisions pending", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [],
+    complete: false,
+    limitations: ["Extraction stopped early."]
+  }));
+  const previousDecision = agreement({
+    key: "prior-decision",
+    statement: "The prior decision remains open.",
+    kind: "human_boundary",
+    state: "diverged",
+    conversation_event_ids: ["u1"]
+  });
+  const comparison = compareAgreementAuditDecisions(
+    { ...audit, completeness: { ...audit.completeness, verified: true, operator_confirmed: true } },
+    {
+      version: audit.version,
+      repository: audit.repository,
+      head_sha: "c".repeat(40),
+      agreements: [previousDecision]
+    }
+  );
+  assert.deepEqual(comparison.resolved_decision_keys, []);
+  assert.deepEqual(comparison.unverified_previous_decision_keys, ["prior-decision"]);
+});
+
 test("rerun comparison matches the same grounded decision when a model changes its key", () => {
   const input = loadInput("unauthorized-scope");
   const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
@@ -204,6 +233,37 @@ test("rerun comparison does not hide a new grounded decision behind a reused mod
   assert.deepEqual(comparison.new_decision_keys, ["generic-boundary"]);
   assert.deepEqual(comparison.resolved_decision_keys, ["generic-boundary"]);
   assert.deepEqual(comparison.unverified_previous_decision_keys, []);
+});
+
+test("rerun comparison surfaces a decision whose state or materiality changed", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "dependency-boundary",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      materiality: "material",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency or approve the departure."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const current = {
+    ...audit,
+    completeness: { ...audit.completeness, verified: true, operator_confirmed: true }
+  };
+  const comparison = compareAgreementAuditDecisions(current, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [{ ...audit.agreements[0], state: "unresolved", materiality: "supporting" }]
+  });
+  assert.deepEqual(comparison.unchanged_decision_keys, []);
+  assert.deepEqual(comparison.new_decision_keys, ["dependency-boundary"]);
+  assert.deepEqual(comparison.resolved_decision_keys, ["dependency-boundary"]);
 });
 
 test("rerun comparison preserves two decisions grounded in the same user turn", () => {
@@ -304,7 +364,7 @@ test("the completeness pass receives conversation coverage data without retransm
   assert.doesNotMatch(prompt, /"commands":/);
 });
 
-test("a model cannot hide an omitted user instruction behind a non-material disposition", () => {
+test("non-material turns become trusted only after an operator confirms the exact ledgers", () => {
   const input = loadInput("clean-alignment");
   const candidate = parseAgreementAuditCandidate({
     final_goal: { text: "Remove the change map.", conversation_event_ids: ["u1"] },
@@ -336,8 +396,14 @@ test("a model cannot hide an omitted user instruction behind a non-material disp
   const audit = groundAgreementAudit(input, candidate, completeness);
   assert.equal(audit.status, "cannot_audit");
   assert.equal(audit.completeness.verified, false);
-  assert.ok(audit.completeness.rejections.some((rejection) => /user event u2 cannot be declared non-material/.test(rejection)));
-  assert.ok(audit.completeness.rejections.some((rejection) => /assistant event a1 cannot be declared non-material/.test(rejection)));
+  assert.equal(audit.completeness.structurally_verified, true);
+  assert.equal(audit.completeness.rejections.length, 0);
+
+  const token = agreementCompletenessConfirmationToken(input, candidate, completeness);
+  const confirmed = groundAgreementAudit(input, candidate, completeness, token);
+  assert.equal(confirmed.status, "no_mismatch_found");
+  assert.equal(confirmed.completeness.verified, true);
+  assert.equal(confirmed.completeness.operator_confirmed, true);
 });
 
 test("a supporting unresolved human boundary still blocks a clean result", () => {

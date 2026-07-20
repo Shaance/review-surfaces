@@ -414,6 +414,27 @@ test("review-surfaces --cache: default mock analysis of a provided conversation 
   }
 });
 
+test("review-surfaces --cache: a missing explicit conversation cannot reuse a no-conversation packet", () => {
+  const tmp = setupRepo("review-surfaces-cache-missing-conversation-");
+  try {
+    const stableFlags = ["--now", FROZEN, "--cache", "--no-conversation-discovery"];
+    const prime = runAll(tmp, stableFlags);
+    assert.equal(prime.status, 0, prime.stderr);
+    const sentinel = read(tmp, "review_packet.json").replace(
+      "\"schema_version\"",
+      "\"_missing_conversation_sentinel\": true,\n  \"schema_version\""
+    );
+    fs.writeFileSync(path.join(tmp, ".review-surfaces", "review_packet.json"), sentinel);
+
+    const missing = runAll(tmp, [...stableFlags, "--conversation", "missing-conversation.jsonl"]);
+    assert.equal(missing.status, 0, missing.stderr);
+    assert.doesNotMatch(missing.stdout, /inputs unchanged/);
+    assert.doesNotMatch(read(tmp, "review_packet.json"), /_missing_conversation_sentinel/);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // FIX 2: without --cache a run ALWAYS regenerates even when inputs are unchanged
 // (current default behavior preserved).
 test("review-surfaces without --cache always regenerates", () => {

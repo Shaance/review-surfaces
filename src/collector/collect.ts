@@ -380,17 +380,16 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
         options.strictConversationInputs ? "conversation" : undefined
       )
     : undefined;
-  const additionalConversationSnapshots = await Promise.all(
-    (options.additionalConversationPaths ?? []).map((conversationPath, index) =>
-      loadExplicitConversationSnapshot(
-        options.cwd,
-        conversationPath,
-        options.conversationFormat,
-        `conversation-${index + 2}`,
-        `additional conversation ${index + 1}`
-      ) as Promise<CollectedConversationSnapshot>
-    )
-  );
+  const additionalConversationSnapshots: CollectedConversationSnapshot[] = [];
+  for (const [index, conversationPath] of (options.additionalConversationPaths ?? []).entries()) {
+    additionalConversationSnapshots.push(await loadExplicitConversationSnapshot(
+      options.cwd,
+      conversationPath,
+      options.conversationFormat,
+      `conversation-${index + 2}`,
+      `additional conversation ${index + 1}`
+    ) as CollectedConversationSnapshot);
+  }
   const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   const pinnedBaseRef = git.base_sha ?? options.baseRef;
   const pinnedHeadRef = git.head_sha !== "unknown" ? git.head_sha : options.headRef;
@@ -785,7 +784,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     // Conversation bytes are folded below from the exact normalization snapshot
     // for both explicit and discovered sources. Re-reading here could stamp a
     // different live file than the audit actually inspected.
-    { kind: "conversation", path: undefined },
+    {
+      kind: "conversation",
+      path: options.conversationPath && conversationInputHashes.length === 0
+        ? options.conversationPath
+        : undefined
+    },
     { kind: "coverage", path: options.coverageOutputPath },
     { kind: "coverage-lcov", path: lcovSource?.sourcePath },
     { kind: "agent-input", path: options.agentInputPath },

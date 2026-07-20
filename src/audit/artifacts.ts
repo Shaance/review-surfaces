@@ -10,13 +10,11 @@ export function writePrivateJson(file: string, value: unknown): void {
   writePrivateFile(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-export function clearAgreementAuditArtifacts(out: string): void {
+export function clearAgreementAuditWorkingArtifacts(out: string): void {
   for (const name of [
     "agreement-audit-input.json",
     "agreement-audit-candidate.json",
-    "agreement-audit-completeness.json",
-    "audit.json",
-    "audit.md"
+    "agreement-audit-completeness.json"
   ]) {
     clearAuditArtifact(out, name);
   }

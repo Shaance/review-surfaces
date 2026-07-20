@@ -38,8 +38,7 @@ export function verifyAgreementCompleteness(
   const eligibleEvents = input.conversation.events.filter((event) =>
     event.actor === "user" || event.actor === "assistant" || event.actor === "agent"
   );
-  const eligibleEventById = new Map(eligibleEvents.map((event) => [event.id, event]));
-  const eligibleIds = new Set(eligibleEventById.keys());
+  const eligibleIds = new Set(eligibleEvents.map((event) => event.id));
   const agreements = new Map(candidate.agreements.map((agreement) => [agreement.key, agreement]));
   const agreementEventIds = new Map(candidate.agreements.map((agreement) => [
     agreement.key,
@@ -83,12 +82,6 @@ export function verifyAgreementCompleteness(
         }
       }
     } else {
-      const event = eligibleEventById.get(disposition.event_id);
-      if (event) {
-        rejections.push(
-          `${event.actor} event ${disposition.event_id} cannot be declared non-material without trusted human confirmation`
-        );
-      }
       if (disposition.agreement_keys.length > 0) {
         rejections.push(`non-material event ${disposition.event_id} must not cite agreement keys`);
       }

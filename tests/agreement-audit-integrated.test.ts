@@ -93,6 +93,9 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     const partialOut = path.join(root, "audit-partial");
     const preflightOut = path.join(root, "audit-preflight");
     const conversationPreflightOut = path.join(root, "audit-conversation-preflight");
+    const missingConversationOut = path.join(root, "audit-missing-conversation");
+    const emptyConversationOut = path.join(root, "audit-empty-conversation");
+    const privacyBlockedOut = path.join(root, "audit-privacy-blocked");
     const auditArgs = [
       cli, "audit", "--base", "HEAD~1", "--head", "HEAD",
       "--provider", "agent-file", "--agent-input", agentPath,
@@ -140,6 +143,36 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     assert.equal(conversationPreflight.status, 1);
     assert.match(conversationPreflight.stderr, /conversation was unreadable or unmatched/);
     assert.equal(fs.existsSync(conversationPreflightOut), false);
+
+    const missingConversation = spawnSync(process.execPath, [
+      cli, "audit", "--base", "HEAD~1", "--head", "HEAD",
+      "--provider", "agent-file", "--agent-input", agentPath,
+      "--no-conversation-discovery", "--out", missingConversationOut
+    ], { cwd: repo, encoding: "utf8" });
+    assert.equal(missingConversation.status, 4, missingConversation.stderr);
+    const missingAudit = JSON.parse(
+      fs.readFileSync(path.join(missingConversationOut, "audit.json"), "utf8")
+    ) as { status: string; conversation: { status: string }; limitations: string[] };
+    assert.equal(missingAudit.status, "cannot_audit");
+    assert.equal(missingAudit.conversation.status, "missing");
+    assert.ok(missingAudit.limitations.some((limitation) => /No auditable conversation was collected/.test(limitation)));
+    assert.match(fs.readFileSync(path.join(missingConversationOut, "audit.md"), "utf8"), /## Audit incomplete/);
+
+    const emptyConversationPath = path.join(root, "empty-conversation.yaml");
+    fs.writeFileSync(emptyConversationPath, "events: []\n");
+    const emptyConversation = spawnSync(process.execPath, [
+      cli, "audit", "--base", "HEAD~1", "--head", "HEAD",
+      "--provider", "agent-file", "--agent-input", agentPath,
+      "--conversation", emptyConversationPath, "--conversation-format", "normalized",
+      "--out", emptyConversationOut
+    ], { cwd: repo, encoding: "utf8" });
+    assert.equal(emptyConversation.status, 4, emptyConversation.stderr);
+    const emptyAudit = JSON.parse(
+      fs.readFileSync(path.join(emptyConversationOut, "audit.json"), "utf8")
+    ) as { status: string; limitations: string[] };
+    assert.equal(emptyAudit.status, "cannot_audit");
+    assert.ok(emptyAudit.limitations.some((limitation) => /No auditable conversation was collected/.test(limitation)));
+    assert.match(fs.readFileSync(path.join(emptyConversationOut, "audit.md"), "utf8"), /## Audit incomplete/);
 
     const initialResult = spawnSync(process.execPath, [
       ...auditArgs, "--conversation-scope", "complete", "--out", completeOut
@@ -193,6 +226,19 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     assert.ok(fs.existsSync(path.join(completeOut, "agreement-audit-input.json")));
     assert.ok(fs.existsSync(path.join(completeOut, "agreement-audit-candidate.json")));
     assert.ok(fs.existsSync(path.join(completeOut, "agreement-audit-completeness.json")));
+
+    const priorPublishedJson = fs.readFileSync(path.join(completeOut, "audit.json"), "utf8");
+    const priorPublishedMarkdown = fs.readFileSync(path.join(completeOut, "audit.md"), "utf8");
+    fs.rmSync(path.join(completeOut, "audit.md"));
+    fs.mkdirSync(path.join(completeOut, "audit.md"));
+    const failedPublish = spawnSync(process.execPath, [
+      ...auditArgs, "--conversation-scope", "complete", "--out", completeOut
+    ], { cwd: repo, encoding: "utf8" });
+    assert.equal(failedPublish.status, 1);
+    assert.match(failedPublish.stderr, /refusing to replace non-file artifact audit\.md/);
+    assert.equal(fs.readFileSync(path.join(completeOut, "audit.json"), "utf8"), priorPublishedJson);
+    fs.rmSync(path.join(completeOut, "audit.md"), { recursive: true });
+    fs.writeFileSync(path.join(completeOut, "audit.md"), priorPublishedMarkdown);
 
     const confirmedCompleteness = fs.readFileSync(
       path.join(completeOut, "agreement-audit-completeness.json"),
@@ -252,6 +298,26 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     assert.ok(fs.existsSync(path.join(completeOut, "agreement-audit-input.json")));
     assert.equal(fs.existsSync(path.join(completeOut, "agreement-audit-candidate.json")), false);
     assert.equal(fs.existsSync(path.join(completeOut, "audit.json")), false);
+
+    fs.writeFileSync(
+      path.join(repo, "greeting.ts"),
+      `export const token = "ghp_${"a".repeat(36)}";\n`
+    );
+    git(repo, ["add", "greeting.ts"]);
+    git(repo, ["commit", "-m", "add blocked fixture"]);
+    const privacyBlocked = spawnSync(process.execPath, [
+      cli, "audit", "--base", "HEAD~1", "--head", "HEAD",
+      "--provider", "ai-sdk",
+      "--conversation", conversationPath, "--conversation-format", "normalized",
+      "--conversation-scope", "complete", "--out", privacyBlockedOut
+    ], { cwd: repo, encoding: "utf8" });
+    assert.equal(privacyBlocked.status, 4, privacyBlocked.stderr);
+    const privacyAudit = JSON.parse(
+      fs.readFileSync(path.join(privacyBlockedOut, "audit.json"), "utf8")
+    ) as { status: string; limitations: string[] };
+    assert.equal(privacyAudit.status, "cannot_audit");
+    assert.ok(privacyAudit.limitations.some((limitation) => /blocked.*high-risk secret material/i.test(limitation)));
+    assert.match(fs.readFileSync(path.join(privacyBlockedOut, "audit.md"), "utf8"), /## Audit incomplete/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

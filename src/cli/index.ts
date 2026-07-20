@@ -312,6 +312,7 @@ async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
   const outputDir = path.resolve(cwd, stringFlag(parsed, "out") ?? config.output_dir);
   const releaseAuditLock = acquireAgreementAuditRunLock(outputDir);
   let collectionCompleted = false;
+  let publicationStarted = false;
   try {
     const { collection } = await collect(parsed, config);
     collectionCompleted = true;
@@ -327,11 +328,12 @@ async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
       extractionConfirmationToken: stringFlag(parsed, "confirm-extraction"),
       previousAudit
     });
+    publicationStarted = true;
     const markdownPath = publishAgreementAuditArtifacts(collection.outputDir, audit, { lockHeld: true });
     console.log(`Agreement audit: ${displayPath(cwd, markdownPath)}`);
     return audit.status === "cannot_audit" ? ExitCodes.evidenceValidationFailed : ExitCodes.success;
   } catch (error) {
-    if (collectionCompleted) clearFinalAgreementAuditArtifacts(outputDir);
+    if (collectionCompleted && !publicationStarted) clearFinalAgreementAuditArtifacts(outputDir);
     throw error;
   } finally {
     releaseAuditLock();

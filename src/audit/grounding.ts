@@ -102,11 +102,14 @@ export function groundAgreementAudit(
   if (rejections.length > 0) limitations.push("One or more proposed conclusions failed evidence validation.");
   if (sanitizedCaveat) limitations.push(sanitizedCaveat);
 
-  const coveredUserEvents = new Set(
-    agreements.flatMap((agreement) => agreement.conversation_event_ids)
-  );
+  const accountedUserEvents = new Set(agreements.flatMap((agreement) => agreement.conversation_event_ids));
+  if (extractionCompletenessConfirmed) {
+    for (const disposition of completeness.dispositions) {
+      if (disposition.disposition === "non_material") accountedUserEvents.add(disposition.event_id);
+    }
+  }
   const uncoveredUserEvents = input.conversation.events
-    .filter((event) => event.actor === "user" && !coveredUserEvents.has(event.id))
+    .filter((event) => event.actor === "user" && !accountedUserEvents.has(event.id))
     .map((event) => event.id);
   if (uncoveredUserEvents.length > 0) {
     limitations.push(`${uncoveredUserEvents.length} user turn(s) were not represented by the candidate: ${uncoveredUserEvents.join(", ")}.`);

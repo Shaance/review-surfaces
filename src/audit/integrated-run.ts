@@ -6,7 +6,9 @@ import { isGitAncestor } from "../collector/git";
 import type { ReasoningProvider } from "../contracts/provider";
 import {
   AGREEMENT_AUDIT_INPUT_VERSION,
+  AGREEMENT_AUDIT_RESULT_VERSION,
   type AgreementAudit,
+  type AgreementAuditCandidate,
   type AgreementAuditInput,
   type AgreementCompletenessCandidate,
   type AuditConversationEvent,
@@ -26,7 +28,9 @@ import {
   buildAuditPrompt,
   buildCompletenessPrompt
 } from "./prompt";
-import { clearAgreementAuditArtifacts, writePrivateJson } from "./artifacts";
+import { clearAgreementAuditWorkingArtifacts, writePrivateJson } from "./artifacts";
+
+const AUDIT_ACTORS = new Set(["user", "assistant", "agent", "tool"]);
 
 export interface IntegratedAgreementAuditOptions {
   collection: CollectionResult;
@@ -51,11 +55,24 @@ export async function runIntegratedAgreementAudit(
     candidate: parseAgreementAuditCandidate(readAuditArtifact(options.collection.outputDir, "agreement-audit-candidate.json")),
     completeness: parseAgreementCompletenessCandidate(readAuditArtifact(options.collection.outputDir, "agreement-audit-completeness.json"))
   } : undefined;
-  clearAgreementAuditArtifacts(options.collection.outputDir);
+  clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
+  if (!hasAuditableConversation(options.collection)) {
+    return incompleteAgreementAudit(
+      options,
+      "No auditable conversation was collected; pass --conversation <path> or enable and fix auto-discovery."
+    );
+  }
   const input = buildCollectedAgreementAuditInput(options.collection, options.explicitConversationScope);
   writePrivateJson(path.join(options.collection.outputDir, "agreement-audit-input.json"), input);
 
-  const candidate = confirmedLedgers?.candidate ?? await generateAgreementCandidate(options, input);
+  let candidate: AgreementAuditCandidate;
+  if (confirmedLedgers) {
+    candidate = confirmedLedgers.candidate;
+  } else {
+    const generated = await generateAgreementCandidate(options, input);
+    if (!generated.ok) return incompleteAgreementAudit(options, generated.limitation, input);
+    candidate = generated.candidate;
+  }
   writePrivateJson(path.join(options.collection.outputDir, "agreement-audit-candidate.json"), candidate);
 
   let completeness: AgreementCompletenessCandidate | undefined = confirmedLedgers?.completeness;
@@ -97,20 +114,96 @@ export async function runIntegratedAgreementAudit(
 async function generateAgreementCandidate(
   options: IntegratedAgreementAuditOptions,
   input: AgreementAuditInput
-) {
+): Promise<
+  { ok: true; candidate: AgreementAuditCandidate } |
+  { ok: false; limitation: string }
+> {
+  if (options.provider.name === "ai-sdk" && options.collection.privacy.remote_provider_blocked) {
+    return {
+      ok: false,
+      limitation: "Agreement extraction was blocked because the collected evidence contains high-risk secret material. Collected input remains in agreement-audit-input.json."
+    };
+  }
+  let prompt: string;
+  try {
+    prompt = buildAuditPrompt(input, "review-surfaces");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/secret material/iu.test(message)) {
+      return {
+        ok: false,
+        limitation: "Agreement extraction was blocked because the collected evidence contains high-risk secret material. Collected input remains in agreement-audit-input.json."
+      };
+    }
+    throw error;
+  }
   const result = await options.provider.generateStructured(
     "agreement-audit",
-    buildAuditPrompt(input, "review-surfaces"),
+    prompt,
     AGREEMENT_CANDIDATE_SCHEMA,
     { remotePrivacyBlocked: options.collection.privacy.remote_provider_blocked }
   );
   if (!result.ok) {
-    throw new Error(
-      `agreement extraction unavailable (${result.reason}); collected input remains at ` +
-      `${path.join(options.collection.outputDir, "agreement-audit-input.json")}`
-    );
+    const explanation = result.reason === "privacy_block"
+      ? "Agreement extraction was blocked because the collected evidence contains high-risk secret material."
+      : `Agreement extraction was unavailable (${result.reason}).`;
+    return {
+      ok: false,
+      limitation: `${explanation} Collected input remains in agreement-audit-input.json.`
+    };
   }
-  return parseAgreementAuditCandidate(result.data);
+  return { ok: true, candidate: parseAgreementAuditCandidate(result.data) };
+}
+
+function hasAuditableConversation(collection: CollectionResult): boolean {
+  return collectedConversationSources(collection).some((source) =>
+    source.events.some((event) => isAuditableConversationActor(event.actor))
+  );
+}
+
+function incompleteAgreementAudit(
+  options: IntegratedAgreementAuditOptions,
+  limitation: string,
+  input?: AgreementAuditInput
+): AgreementAudit {
+  const baseSha = input?.base_sha ?? options.collection.mergeBaseSha;
+  const headSha = input?.head_sha ?? options.collection.manifest.head_sha;
+  if (!baseSha || !/^[a-f0-9]{40}$/iu.test(headSha)) {
+    throw new Error("agreement audit could not resolve the exact merge-base and head SHAs");
+  }
+  const sources = input?.conversation.sources ?? conversationSourceReferences(options.collection);
+  const conversationStatus = sources.length === 0
+    ? "missing" as const
+    : input?.conversation.status ?? options.explicitConversationScope ?? "partial";
+  const audit: AgreementAudit = {
+    version: AGREEMENT_AUDIT_RESULT_VERSION,
+    repository: input?.repository ?? options.collection.git.repo,
+    base_sha: baseSha,
+    head_sha: headSha,
+    status: "cannot_audit",
+    candidate_complete: false,
+    completeness: {
+      verified: false,
+      structurally_verified: false,
+      operator_confirmed: false,
+      dispositions: [],
+      limitations: [limitation],
+      rejections: []
+    },
+    final_goal: null,
+    agreements: [],
+    conversation: {
+      status: conversationStatus,
+      sources,
+      caveat: limitation
+    },
+    limitations: [limitation],
+    rejections: []
+  };
+  if (options.previousAudit) {
+    audit.comparison = compareAgreementAuditDecisions(audit, options.previousAudit);
+  }
+  return audit;
 }
 
 function readAuditArtifact(outputDir: string, name: string): unknown {
@@ -133,15 +226,7 @@ export function buildCollectedAgreementAuditInput(
     throw new Error("agreement audit requires a clean working tree or an explicitly pinned --head so every evidence link names immutable bytes");
   }
   const events = mapConversationEvents(collection);
-  const sources = collection.conversationSources?.map((source) => ({
-    id: source.id,
-    sha256: source.sha256,
-    selection: source.selection
-  })) ?? (collection.conversationSourceHash ? [{
-    id: "conversation-1",
-    sha256: collection.conversationSourceHash,
-    selection: collection.conversationDiscovery?.status === "admitted" ? "discovered" as const : "explicit" as const
-  }] : []);
+  const sources = conversationSourceReferences(collection);
   if (events.length === 0 || sources.length === 0) {
     throw new Error("no auditable conversation was collected; pass --conversation <path> or fix auto-discovery");
   }
@@ -193,12 +278,8 @@ export function buildCollectedAgreementAuditInput(
 }
 
 function mapConversationEvents(collection: CollectionResult): AuditConversationEvent[] {
-  const sources = collection.conversationSources ?? (collection.conversationEvents ? [{
-    id: "conversation-1",
-    events: collection.conversationEvents
-  }] : []);
-  return sources.flatMap((source) => source.events
-    .filter((event) => ["user", "assistant", "agent", "tool"].includes(event.actor.toLowerCase()))
+  return collectedConversationSources(collection).flatMap((source) => source.events
+    .filter((event) => isAuditableConversationActor(event.actor))
     .map((event) => ({ source, event })))
     .map(({ source, event }, order) => ({
       id: event.id,
@@ -208,6 +289,32 @@ function mapConversationEvents(collection: CollectionResult): AuditConversationE
       text: event.summary,
       order
     }));
+}
+
+type CollectedConversationSource = NonNullable<CollectionResult["conversationSources"]>[number];
+
+function collectedConversationSources(collection: CollectionResult): CollectedConversationSource[] {
+  if (collection.conversationSources?.length) return collection.conversationSources;
+  if (!collection.conversationSourceHash || !collection.conversationEvents) return [];
+  return [{
+    id: "conversation-1",
+    sha256: collection.conversationSourceHash,
+    selection: collection.conversationDiscovery?.status === "admitted" ? "discovered" : "explicit",
+    adapter: collection.conversationSource ?? "normalized",
+    events: collection.conversationEvents
+  }];
+}
+
+function conversationSourceReferences(collection: CollectionResult): AgreementAuditInput["conversation"]["sources"] {
+  return collectedConversationSources(collection).map((source) => ({
+    id: source.id,
+    sha256: source.sha256,
+    selection: source.selection
+  }));
+}
+
+function isAuditableConversationActor(actor: string): boolean {
+  return AUDIT_ACTORS.has(actor.toLowerCase());
 }
 
 function normalizeActor(actor: string): AuditConversationEvent["actor"] {
