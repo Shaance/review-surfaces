@@ -1,9 +1,11 @@
-import fs from "node:fs";
 import path from "node:path";
+import { AGREEMENT_AUDIT_ARTIFACTS } from "../artifacts/agreement-audit";
 import type { CollectionResult } from "../collector/collect";
 import { parseStructuredDiff } from "../collector/diff-hunks";
 import { isGitAncestor } from "../collector/git";
 import type { ReasoningProvider } from "../contracts/provider";
+import { ExitCodes } from "../core/exit-codes";
+import { providerMakesRemoteCall } from "../llm/provider";
 import {
   AGREEMENT_AUDIT_INPUT_VERSION,
   AGREEMENT_AUDIT_RESULT_VERSION,
@@ -17,6 +19,7 @@ import {
 } from "./contract";
 import { compareAgreementAuditDecisions } from "./comparison";
 import { groundAgreementAudit } from "./grounding";
+import { readAgreementAuditLedgers, type AgreementAuditLedgers } from "./ledgers";
 import {
   parseAgreementAuditCandidate,
   parseAgreementAuditInput,
@@ -40,9 +43,22 @@ export interface IntegratedAgreementAuditOptions {
   previousAudit?: ComparableAgreementAudit;
 }
 
+export interface IntegratedAgreementAuditResult {
+  audit: AgreementAudit;
+  privacyBlocked: boolean;
+}
+
+export function integratedAgreementAuditExitCode(result: IntegratedAgreementAuditResult): number {
+  if (result.privacyBlocked) return ExitCodes.privacyBlocked;
+  return result.audit.status === "cannot_audit"
+    ? ExitCodes.evidenceValidationFailed
+    : ExitCodes.success;
+}
+
 export async function runIntegratedAgreementAudit(
   options: IntegratedAgreementAuditOptions
-): Promise<AgreementAudit> {
+): Promise<IntegratedAgreementAuditResult> {
+  const remoteProvider = providerMakesRemoteCall(options.provider.name);
   const previousAudit = options.previousAudit;
   if (previousAudit && !isGitAncestor(
     options.collection.cwd,
@@ -51,77 +67,124 @@ export async function runIntegratedAgreementAudit(
   )) {
     throw new Error("--previous-audit head must be an ancestor of the reviewed head");
   }
-  const confirmedLedgers = options.extractionConfirmationToken ? {
-    candidate: parseAgreementAuditCandidate(readAuditArtifact(options.collection.outputDir, "agreement-audit-candidate.json")),
-    completeness: parseAgreementCompletenessCandidate(readAuditArtifact(options.collection.outputDir, "agreement-audit-completeness.json"))
-  } : undefined;
-  clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
+  let confirmedLedgers: AgreementAuditLedgers | undefined;
+  if (options.extractionConfirmationToken) {
+    try {
+      confirmedLedgers = readAgreementAuditLedgers(
+        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.candidate),
+        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.completeness)
+      );
+    } catch {
+      throw new Error(
+        `--confirm-extraction requires the prior ${AGREEMENT_AUDIT_ARTIFACTS.candidate} and ` +
+        `${AGREEMENT_AUDIT_ARTIFACTS.completeness} artifacts; run audit once and review its ledgers first`
+      );
+    }
+  }
+  if (!confirmedLedgers) clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
   if (!hasAuditableConversation(options.collection)) {
-    return incompleteAgreementAudit(
-      options,
-      "No auditable conversation was collected; pass --conversation <path> or enable and fix auto-discovery."
-    );
+    return {
+      audit: incompleteAgreementAudit(
+        options,
+        "No auditable conversation was collected; pass --conversation <path> or enable and fix auto-discovery."
+      ),
+      privacyBlocked: false
+    };
   }
   const input = buildCollectedAgreementAuditInput(options.collection, options.explicitConversationScope);
-  writePrivateJson(path.join(options.collection.outputDir, "agreement-audit-input.json"), input);
+  writePrivateJson(path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.input), input);
 
   let candidate: AgreementAuditCandidate;
+  let candidateBytes: string | undefined;
   if (confirmedLedgers) {
     candidate = confirmedLedgers.candidate;
   } else {
-    const generated = await generateAgreementCandidate(options, input);
-    if (!generated.ok) return incompleteAgreementAudit(options, generated.limitation, input);
+    const generated = await generateAgreementCandidate(options, input, remoteProvider);
+    if (!generated.ok) {
+      return {
+        audit: incompleteAgreementAudit(options, generated.limitation, input),
+        privacyBlocked: generated.privacyBlocked
+      };
+    }
     candidate = generated.candidate;
   }
-  writePrivateJson(path.join(options.collection.outputDir, "agreement-audit-candidate.json"), candidate);
+  if (!confirmedLedgers) {
+    candidateBytes = writePrivateJson(
+      path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.candidate),
+      candidate
+    );
+  }
 
   let completeness: AgreementCompletenessCandidate | undefined = confirmedLedgers?.completeness;
+  let completenessBytes: string | undefined;
   let completenessLimitation: string | undefined;
+  let completenessPrivacyBlocked = false;
   if (!confirmedLedgers) {
-    const completenessResult = await options.provider.generateStructured(
-      "agreement-completeness",
-      buildCompletenessPrompt(input, candidate),
-      AGREEMENT_COMPLETENESS_SCHEMA,
-      { remotePrivacyBlocked: options.collection.privacy.remote_provider_blocked }
-    );
-    if (completenessResult.ok) {
-      try {
-        completeness = parseAgreementCompletenessCandidate(completenessResult.data);
-      } catch {
-        completenessLimitation = "The separate completeness pass returned invalid output, so a clean result cannot be verified.";
+    try {
+      const completenessResult = await options.provider.generateStructured(
+        "agreement-completeness",
+        buildCompletenessPrompt(input, candidate),
+        AGREEMENT_COMPLETENESS_SCHEMA,
+        { remotePrivacyBlocked: options.collection.privacy.remote_provider_blocked }
+      );
+      if (completenessResult.ok) {
+        try {
+          completeness = parseAgreementCompletenessCandidate(completenessResult.data);
+        } catch {
+          completenessLimitation = "The separate completeness pass returned invalid output, so a clean result cannot be verified.";
+        }
+      } else {
+        completenessPrivacyBlocked = remoteProvider && completenessResult.reason === "privacy_block";
+        completenessLimitation = completenessPrivacyBlocked
+          ? "The separate completeness pass was blocked because its prompt contains high-risk secret material, so a clean result cannot be verified."
+          : `The separate completeness pass was unavailable (${completenessResult.reason}), so a clean result cannot be verified.`;
       }
-    } else {
-      completenessLimitation = `The separate completeness pass was unavailable (${completenessResult.reason}), so a clean result cannot be verified.`;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/secret material/iu.test(message)) throw error;
+      completenessPrivacyBlocked = remoteProvider;
+      completenessLimitation = "The separate completeness pass was blocked because its prompt contains high-risk secret material, so a clean result cannot be verified.";
     }
   }
-  if (completeness) {
-    writePrivateJson(path.join(options.collection.outputDir, "agreement-audit-completeness.json"), completeness);
+  if (completeness && !confirmedLedgers) {
+    completenessBytes = writePrivateJson(
+      path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.completeness),
+      completeness
+    );
   }
 
+  const confirmationLedgerBytes = confirmedLedgers?.bytes ??
+    (candidateBytes && completenessBytes ? {
+      candidate: candidateBytes,
+      completeness: completenessBytes
+    } : undefined);
   const audit = groundAgreementAudit(input, {
     ...candidate,
     limitations: completenessLimitation
       ? [...candidate.limitations, completenessLimitation]
       : candidate.limitations
-  }, completeness, options.extractionConfirmationToken);
+  }, completeness, options.extractionConfirmationToken, confirmationLedgerBytes);
 
   if (previousAudit) {
     audit.comparison = compareAgreementAuditDecisions(audit, previousAudit);
   }
-  return audit;
+  return { audit, privacyBlocked: completenessPrivacyBlocked };
 }
 
 async function generateAgreementCandidate(
   options: IntegratedAgreementAuditOptions,
-  input: AgreementAuditInput
+  input: AgreementAuditInput,
+  remoteProvider: boolean
 ): Promise<
   { ok: true; candidate: AgreementAuditCandidate } |
-  { ok: false; limitation: string }
+  { ok: false; limitation: string; privacyBlocked: boolean }
 > {
-  if (options.provider.name === "ai-sdk" && options.collection.privacy.remote_provider_blocked) {
+  if (remoteProvider && options.collection.privacy.remote_provider_blocked) {
     return {
       ok: false,
-      limitation: "Agreement extraction was blocked because the collected evidence contains high-risk secret material. Collected input remains in agreement-audit-input.json."
+      privacyBlocked: true,
+      limitation: "Agreement extraction was blocked because the collected evidence contains high-risk secret material. " +
+        `Collected input remains in ${AGREEMENT_AUDIT_ARTIFACTS.input}.`
     };
   }
   let prompt: string;
@@ -132,7 +195,9 @@ async function generateAgreementCandidate(
     if (/secret material/iu.test(message)) {
       return {
         ok: false,
-        limitation: "Agreement extraction was blocked because the collected evidence contains high-risk secret material. Collected input remains in agreement-audit-input.json."
+        privacyBlocked: remoteProvider,
+        limitation: "Agreement extraction was blocked because the collected evidence contains high-risk secret material. " +
+          `Collected input remains in ${AGREEMENT_AUDIT_ARTIFACTS.input}.`
       };
     }
     throw error;
@@ -149,7 +214,8 @@ async function generateAgreementCandidate(
       : `Agreement extraction was unavailable (${result.reason}).`;
     return {
       ok: false,
-      limitation: `${explanation} Collected input remains in agreement-audit-input.json.`
+      privacyBlocked: remoteProvider && result.reason === "privacy_block",
+      limitation: `${explanation} Collected input remains in ${AGREEMENT_AUDIT_ARTIFACTS.input}.`
     };
   }
   return { ok: true, candidate: parseAgreementAuditCandidate(result.data) };
@@ -157,7 +223,7 @@ async function generateAgreementCandidate(
 
 function hasAuditableConversation(collection: CollectionResult): boolean {
   return collectedConversationSources(collection).some((source) =>
-    source.events.some((event) => isAuditableConversationActor(event.actor))
+    source.events.some(isAuditableConversationEvent)
   );
 }
 
@@ -204,15 +270,6 @@ function incompleteAgreementAudit(
     audit.comparison = compareAgreementAuditDecisions(audit, options.previousAudit);
   }
   return audit;
-}
-
-function readAuditArtifact(outputDir: string, name: string): unknown {
-  const file = path.join(outputDir, name);
-  try {
-    return JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-  } catch {
-    throw new Error(`--confirm-extraction requires the prior ${name} artifact; run audit once and review its ledgers first`);
-  }
 }
 
 export function buildCollectedAgreementAuditInput(
@@ -279,7 +336,7 @@ export function buildCollectedAgreementAuditInput(
 
 function mapConversationEvents(collection: CollectionResult): AuditConversationEvent[] {
   return collectedConversationSources(collection).flatMap((source) => source.events
-    .filter((event) => isAuditableConversationActor(event.actor))
+    .filter(isAuditableConversationEvent)
     .map((event) => ({ source, event })))
     .map(({ source, event }, order) => ({
       id: event.id,
@@ -315,6 +372,10 @@ function conversationSourceReferences(collection: CollectionResult): AgreementAu
 
 function isAuditableConversationActor(actor: string): boolean {
   return AUDIT_ACTORS.has(actor.toLowerCase());
+}
+
+function isAuditableConversationEvent(event: CollectedConversationSource["events"][number]): boolean {
+  return isAuditableConversationActor(event.actor) && event.summary.trim().length > 0;
 }
 
 function normalizeActor(actor: string): AuditConversationEvent["actor"] {

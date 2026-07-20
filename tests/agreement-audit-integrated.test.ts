@@ -5,6 +5,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { acquireAgreementAuditRunLock } from "../src/audit/artifacts";
+import { integratedAgreementAuditExitCode, runIntegratedAgreementAudit } from "../src/audit/integrated-run";
+import { ExitCodes } from "../src/core/exit-codes";
+import type { CollectionResult } from "../src/collector/collect";
+import type { ReasoningProvider } from "../src/contracts/provider";
 
 test("review-surfaces audit collects, verifies, and renders a clean result in one command", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-audit-integrated-"));
@@ -28,6 +32,7 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     const conversationPath = path.join(root, "conversation.jsonl");
     fs.writeFileSync(conversationPath, [
       JSON.stringify({ id: "u1", actor: "user", kind: "message", summary: "Change the greeting to hello world." }),
+      JSON.stringify({ id: "t1", actor: "tool", kind: "tool_result", summary: "" }),
       JSON.stringify({ id: "a1", actor: "assistant", kind: "message", summary: "I will change the greeting to hello world." })
     ].join("\n") + "\n");
     const additionalConversationPath = path.join(root, "later-conversation.jsonl");
@@ -96,6 +101,7 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     const missingConversationOut = path.join(root, "audit-missing-conversation");
     const emptyConversationOut = path.join(root, "audit-empty-conversation");
     const privacyBlockedOut = path.join(root, "audit-privacy-blocked");
+    const secretMissingConversationOut = path.join(root, "audit-secret-missing-conversation");
     const auditArgs = [
       cli, "audit", "--base", "HEAD~1", "--head", "HEAD",
       "--provider", "agent-file", "--agent-input", agentPath,
@@ -189,10 +195,29 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
 
     const originalAgentText = fs.readFileSync(agentPath, "utf8");
     fs.writeFileSync(agentPath, JSON.stringify({ stages: {} }));
-    const result = spawnSync(process.execPath, [
+    fs.appendFileSync(path.join(completeOut, "agreement-audit-candidate.json"), " ");
+    const tamperedConfirmation = spawnSync(process.execPath, [
       ...auditArgs,
       "--conversation-scope", "complete",
       "--confirm-extraction", initialAudit.completeness.confirmation_token!,
+      "--out", completeOut
+    ], { cwd: repo, encoding: "utf8" });
+    assert.equal(tamperedConfirmation.status, 4, tamperedConfirmation.stderr);
+    const tamperedAudit = JSON.parse(fs.readFileSync(path.join(completeOut, "audit.json"), "utf8")) as {
+      completeness: { operator_confirmed: boolean; confirmation_token?: string };
+    };
+    assert.equal(tamperedAudit.completeness.operator_confirmed, false);
+    assert.ok(tamperedAudit.completeness.confirmation_token);
+    assert.notEqual(tamperedAudit.completeness.confirmation_token, initialAudit.completeness.confirmation_token);
+    assert.match(
+      fs.readFileSync(path.join(completeOut, "agreement-audit-candidate.json"), "utf8"),
+      / $/
+    );
+
+    const result = spawnSync(process.execPath, [
+      ...auditArgs,
+      "--conversation-scope", "complete",
+      "--confirm-extraction", tamperedAudit.completeness.confirmation_token!,
       "--out", completeOut
     ], { cwd: repo, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
@@ -311,17 +336,113 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
       "--conversation", conversationPath, "--conversation-format", "normalized",
       "--conversation-scope", "complete", "--out", privacyBlockedOut
     ], { cwd: repo, encoding: "utf8" });
-    assert.equal(privacyBlocked.status, 4, privacyBlocked.stderr);
+    assert.equal(privacyBlocked.status, 5, privacyBlocked.stderr);
     const privacyAudit = JSON.parse(
       fs.readFileSync(path.join(privacyBlockedOut, "audit.json"), "utf8")
     ) as { status: string; limitations: string[] };
     assert.equal(privacyAudit.status, "cannot_audit");
     assert.ok(privacyAudit.limitations.some((limitation) => /blocked.*high-risk secret material/i.test(limitation)));
     assert.match(fs.readFileSync(path.join(privacyBlockedOut, "audit.md"), "utf8"), /## Audit incomplete/);
+
+    const secretMissingConversation = spawnSync(process.execPath, [
+      cli, "audit", "--base", "HEAD~1", "--head", "HEAD",
+      "--provider", "ai-sdk", "--no-conversation-discovery",
+      "--out", secretMissingConversationOut
+    ], { cwd: repo, encoding: "utf8" });
+    assert.equal(secretMissingConversation.status, 4, secretMissingConversation.stderr);
+    const secretMissingAudit = JSON.parse(
+      fs.readFileSync(path.join(secretMissingConversationOut, "audit.json"), "utf8")
+    ) as { status: string; limitations: string[] };
+    assert.equal(secretMissingAudit.status, "cannot_audit");
+    assert.ok(secretMissingAudit.limitations.some((limitation) => /No auditable conversation was collected/.test(limitation)));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("integrated agreement audit reports completeness-stage privacy stops", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-audit-completeness-privacy-"));
+  try {
+    for (const scenario of ["prompt", "provider"] as const) {
+      const outputDir = path.join(root, scenario);
+      fs.mkdirSync(outputDir);
+      let calls = 0;
+      const provider: ReasoningProvider = {
+        name: "ai-sdk",
+        async generateStructured(stage) {
+          calls += 1;
+          if (stage === "agreement-audit") {
+            const statement = scenario === "prompt"
+              ? `Implement the change without exposing ghp_${"a".repeat(36)}.`
+              : "Implement the reviewed change.";
+            return {
+              ok: true,
+              data: {
+                final_goal: { text: statement, conversation_event_ids: ["u1"] },
+                agreements: [{
+                  key: "change",
+                  kind: "human_instruction",
+                  statement,
+                  state: scenario === "provider" ? "diverged" : "fulfilled",
+                  materiality: "material",
+                  conversation_event_ids: ["u1"],
+                  diff_citations: [{ path: "file.ts", side: "add", line: 1, contains: "new" }],
+                  command_ids: [],
+                  ...(scenario === "provider" ? { reviewer_action: "Decide whether to accept the divergence." } : {})
+                }],
+                complete: true,
+                limitations: []
+              }
+            };
+          }
+          return { ok: false, reason: "privacy_block" };
+        }
+      };
+      const result = await runIntegratedAgreementAudit({
+        collection: minimalAuditCollection(outputDir),
+        provider,
+        explicitConversationScope: "complete"
+      });
+      assert.equal(result.audit.status, scenario === "provider" ? "needs_human_decision" : "cannot_audit");
+      assert.equal(result.privacyBlocked, true);
+      assert.equal(integratedAgreementAuditExitCode(result), ExitCodes.privacyBlocked);
+      assert.ok(result.audit.limitations.some((limitation) => /completeness pass was blocked/i.test(limitation)));
+      assert.equal(calls, scenario === "prompt" ? 1 : 2);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function minimalAuditCollection(outputDir: string): CollectionResult {
+  return {
+    cwd: process.cwd(),
+    outputDir,
+    diff_source: "range",
+    mergeBaseSha: "b".repeat(40),
+    reviewedDiff: [
+      "diff --git a/file.ts b/file.ts",
+      "index 1111111..2222222 100644",
+      "--- a/file.ts",
+      "+++ b/file.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      ""
+    ].join("\n"),
+    git: { repo: "example/repo" },
+    manifest: { head_sha: "a".repeat(40), uncommitted_files: 0 },
+    privacy: { remote_provider_blocked: false },
+    commandTranscripts: [],
+    conversationSources: [{
+      id: "conversation-1",
+      sha256: "c".repeat(64),
+      selection: "explicit",
+      adapter: "normalized",
+      events: [{ id: "u1", actor: "user", kind: "message", summary: "Implement the reviewed change." }]
+    }]
+  } as unknown as CollectionResult;
+}
 
 function git(cwd: string, args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });

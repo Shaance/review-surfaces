@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { AGREEMENT_AUDIT_ARTIFACTS } from "../artifacts/agreement-audit";
 import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../bootstrap/init";
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
@@ -119,7 +120,7 @@ import {
   createPipelineArtifactStore,
   createPipelineArtifactStoreForCollection
 } from "../pipeline/artifact-store";
-import { runIntegratedAgreementAudit } from "../audit/integrated-run";
+import { integratedAgreementAuditExitCode, runIntegratedAgreementAudit } from "../audit/integrated-run";
 import {
   acquireAgreementAuditRunLock,
   clearFinalAgreementAuditArtifacts,
@@ -316,7 +317,7 @@ async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
   try {
     const { collection } = await collect(parsed, config);
     collectionCompleted = true;
-    const audit = await runIntegratedAgreementAudit({
+    const auditResult = await runIntegratedAgreementAudit({
       collection,
       provider: providerFor(providerName, {
         model: effectiveNarrativeModel(parsed, config),
@@ -329,9 +330,9 @@ async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
       previousAudit
     });
     publicationStarted = true;
-    const markdownPath = publishAgreementAuditArtifacts(collection.outputDir, audit, { lockHeld: true });
+    const markdownPath = publishAgreementAuditArtifacts(collection.outputDir, auditResult.audit, { lockHeld: true });
     console.log(`Agreement audit: ${displayPath(cwd, markdownPath)}`);
-    return audit.status === "cannot_audit" ? ExitCodes.evidenceValidationFailed : ExitCodes.success;
+    return integratedAgreementAuditExitCode(auditResult);
   } catch (error) {
     if (collectionCompleted && !publicationStarted) clearFinalAgreementAuditArtifacts(outputDir);
     throw error;
@@ -4371,7 +4372,7 @@ Options:
                    default to partial; assert complete only after checking every session.
   --confirm-extraction <token>
                    Audit: after reviewing the generated candidate and completeness ledgers,
-                   rerun with their audit.json confirmation token to unlock a clean result.
+                   rerun with their ${AGREEMENT_AUDIT_ARTIFACTS.json} confirmation token to unlock a clean result.
   --conversation-format <claude-code|codex|cursor|normalized>
                    Force a raw-transcript adapter; default auto-detects by content shape
   --no-conversation-discovery
@@ -4400,7 +4401,7 @@ Options:
                    compare against. Computes status_changes, new/resolved overreach
                    and risks, and count deltas. Absent/unreadable is a clean no-op.
   --previous-audit <path>
-                   Audit: prior audit.json used to show new, unchanged, and resolved decisions.
+                   Audit: prior ${AGREEMENT_AUDIT_ARTIFACTS.json} used to show new, unchanged, and resolved decisions.
   --post            comment: OPTIONAL best-effort upsert of the rendered sticky comment to
                    the current PR via the gh CLI. Only acts when gh is available AND a PR
                    context is detectable; otherwise it just emits the local artifact. Never
@@ -4450,7 +4451,7 @@ Options:
   --version         Print the version and exit
   --help            Show this help
 
-Gate semantics (only enforced as exit codes with --strict):
+Legacy packet gate semantics (only enforced as exit codes with --strict):
   5  privacy block   provider is not "mock" AND the redacted diff blocked remote enrichment
   4  evidence failed any requirement result/overreach has status "invalid_evidence"
   10 quality gate    missing requirements exceed --max-missing / quality_gate.max_missing,
@@ -4458,7 +4459,10 @@ Gate semantics (only enforced as exit codes with --strict):
                      at or above the threshold severity
   The first applicable gate wins, in the order 5 -> 4 -> 10. validate is unaffected
   and keeps returning 3 on schema-validation failure.
-  audit returns 4 when its evidence cannot support a complete conclusion.
+
+Audit exit semantics (independent of --strict):
+  5  privacy block   a remote provider cannot inspect blocked secret material
+  4  incomplete      other evidence cannot support a complete conclusion
 `);
 }
 

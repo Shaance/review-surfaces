@@ -498,6 +498,9 @@ test("review-surfaces.CLI.1 supports top-level --help output", () => {
   assert.doesNotMatch(result.stdout, /Local-first review packet compiler/);
   assert.match(result.stdout, /run\s+Execute a local command/);
   assert.match(result.stdout, /intent-mismatch\s+Render intent_mismatch\.md from human_review\.json/);
+  assert.match(result.stdout, /Audit exit semantics \(independent of --strict\):/);
+  assert.match(result.stdout, /5\s+privacy block\s+a remote provider cannot inspect blocked secret material/);
+  assert.match(result.stdout, /4\s+incomplete\s+other evidence cannot support a complete conclusion/);
 });
 
 test("review-surfaces.CLI.4 rejects unknown top-level flags", () => {

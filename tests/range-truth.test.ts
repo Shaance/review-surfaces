@@ -518,6 +518,15 @@ test("review-surfaces.COLD_START.7 a ROOT output dir (--out .) never counts its 
     // long-lived root output directory, so deprecated names stay excluded.
     fs.writeFileSync(path.join(tmp, "pending_review.json"), "{}\n");
     fs.writeFileSync(path.join(tmp, "review_routes.md"), "# stale generated routes\n");
+    for (const artifact of [
+      "agreement-audit-input.json",
+      "agreement-audit-candidate.json",
+      "agreement-audit-completeness.json",
+      "audit.json",
+      "audit.md"
+    ]) {
+      fs.writeFileSync(path.join(tmp, artifact), "{}\n");
+    }
     // REAL user files in same-named directories must NOT be treated as
     // artifact churn (PR #79 round 4): only the exact files the tool writes
     // are excluded at the root.

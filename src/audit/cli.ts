@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { readAgreementAuditLedgers } from "./ledgers";
 import { groundAgreementAudit } from "./grounding";
 import { buildAuditPrompt, buildCompletenessPrompt, type AuditPromptMode } from "./prompt";
 import {
   parseAgreementAuditCandidate,
   parseAgreementAuditInput,
-  parseAgreementCompletenessCandidate,
   parseComparableAgreementAudit
 } from "./parse";
 import { compareAgreementAuditDecisions } from "./comparison";
@@ -28,10 +28,13 @@ export async function runAgreementAuditCli(argv: string[]): Promise<number> {
   if (command === "finalize") {
     const flags = parseFlags(rest, ["input", "candidate", "completeness", "previous-audit", "confirm-extraction", "out"]);
     const input = parseAgreementAuditInput(readJson(requiredFlag(flags, "input")));
-    const candidate = parseAgreementAuditCandidate(readJson(requiredFlag(flags, "candidate")));
-    const completeness = flags.get("completeness")
-      ? parseAgreementCompletenessCandidate(readJson(flags.get("completeness")!))
+    const candidateFile = path.resolve(requiredFlag(flags, "candidate"));
+    const completenessFile = flags.get("completeness") ? path.resolve(flags.get("completeness")!) : undefined;
+    const ledgers = completenessFile
+      ? readAgreementAuditLedgers(candidateFile, completenessFile)
       : undefined;
+    const candidate = ledgers?.candidate ?? parseAgreementAuditCandidate(readJson(candidateFile));
+    const completeness = ledgers?.completeness;
     const out = path.resolve(flags.get("out") ?? ".agreement-audit");
     const audit = groundAgreementAudit(input, {
       ...candidate,
@@ -39,7 +42,7 @@ export async function runAgreementAuditCli(argv: string[]): Promise<number> {
         ...candidate.limitations,
         "Evidence was supplied as JSON; trusted collection from Git and transcript bytes was not performed."
       ]
-    }, completeness, flags.get("confirm-extraction"));
+    }, completeness, flags.get("confirm-extraction"), ledgers?.bytes);
     if (flags.get("previous-audit")) {
       audit.comparison = compareAgreementAuditDecisions(
         audit,
@@ -81,7 +84,11 @@ export async function runAgreementAuditCli(argv: string[]): Promise<number> {
 }
 
 function readJson(file: string): unknown {
-  return JSON.parse(fs.readFileSync(path.resolve(file), "utf8")) as unknown;
+  return JSON.parse(readText(file)) as unknown;
+}
+
+function readText(file: string): string {
+  return fs.readFileSync(path.resolve(file), "utf8");
 }
 
 function fileSha256(file: string): string {

@@ -7,12 +7,25 @@ import {
 } from "./contract";
 import { unique } from "../core/guards";
 
+export interface AgreementAuditLedgerBytes {
+  candidate: string;
+  completeness: string;
+}
+
 export function agreementCompletenessConfirmationToken(
   input: AgreementAuditInput,
-  candidate: AgreementAuditCandidate,
-  coverage: AgreementCompletenessCandidate
+  ledgerBytes: AgreementAuditLedgerBytes
 ): string {
-  return crypto.createHash("sha256").update(JSON.stringify({ input, candidate, coverage })).digest("hex");
+  const hash = crypto.createHash("sha256");
+  updateConfirmationPart(hash, "input", JSON.stringify(input));
+  updateConfirmationPart(hash, "candidate", ledgerBytes.candidate);
+  updateConfirmationPart(hash, "completeness", ledgerBytes.completeness);
+  return hash.digest("hex");
+}
+
+function updateConfirmationPart(hash: crypto.Hash, label: string, value: string): void {
+  hash.update(`${label}:${Buffer.byteLength(value, "utf8")}\0`, "utf8");
+  hash.update(value, "utf8");
 }
 
 /**

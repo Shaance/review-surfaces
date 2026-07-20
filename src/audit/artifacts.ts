@@ -3,25 +3,28 @@ import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import lockfile from "proper-lockfile";
+import {
+  AGREEMENT_AUDIT_ARTIFACTS,
+  AGREEMENT_AUDIT_FINAL_ARTIFACTS,
+  AGREEMENT_AUDIT_WORKING_ARTIFACTS
+} from "../artifacts/agreement-audit";
 import type { AgreementAudit } from "./contract";
 import { renderAgreementAuditMarkdown } from "./render";
 
-export function writePrivateJson(file: string, value: unknown): void {
-  writePrivateFile(file, `${JSON.stringify(value, null, 2)}\n`);
+export function writePrivateJson(file: string, value: unknown): string {
+  const bytes = `${JSON.stringify(value, null, 2)}\n`;
+  writePrivateFile(file, bytes);
+  return bytes;
 }
 
 export function clearAgreementAuditWorkingArtifacts(out: string): void {
-  for (const name of [
-    "agreement-audit-input.json",
-    "agreement-audit-candidate.json",
-    "agreement-audit-completeness.json"
-  ]) {
+  for (const name of AGREEMENT_AUDIT_WORKING_ARTIFACTS) {
     clearAuditArtifact(out, name);
   }
 }
 
 export function clearFinalAgreementAuditArtifacts(out: string): void {
-  for (const name of ["audit.json", "audit.md"]) {
+  for (const name of AGREEMENT_AUDIT_FINAL_ARTIFACTS) {
     clearAuditArtifact(out, name);
   }
 }
@@ -70,8 +73,8 @@ export function publishAgreementAuditArtifacts(
   options: { lockHeld?: boolean } = {}
 ): string {
   ensureOutputDirectory(out);
-  const jsonPath = path.join(out, "audit.json");
-  const markdownPath = path.join(out, "audit.md");
+  const jsonPath = path.join(out, AGREEMENT_AUDIT_ARTIFACTS.json);
+  const markdownPath = path.join(out, AGREEMENT_AUDIT_ARTIFACTS.markdown);
   assertWritableArtifactPath(jsonPath);
   assertWritableArtifactPath(markdownPath);
   const staged = stageArtifactPair([

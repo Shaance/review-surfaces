@@ -12,14 +12,19 @@ import {
   agreementNeedsHumanDecision,
   auditDiffCoordinate
 } from "./contract";
-import { agreementCompletenessConfirmationToken, verifyAgreementCompleteness } from "./completeness";
+import {
+  agreementCompletenessConfirmationToken,
+  type AgreementAuditLedgerBytes,
+  verifyAgreementCompleteness
+} from "./completeness";
 import { redactAuditText } from "./presentation-safety";
 
 export function groundAgreementAudit(
   input: AgreementAuditInput,
   candidate: AgreementAuditCandidate,
   completenessCandidate?: AgreementCompletenessCandidate,
-  extractionConfirmationToken?: string
+  extractionConfirmationToken?: string,
+  confirmationLedgerBytes?: AgreementAuditLedgerBytes
 ): AgreementAudit {
   const rawLimitations = unique(candidate.limitations);
   const rejections: AgreementAudit["rejections"] = [];
@@ -43,8 +48,8 @@ export function groundAgreementAudit(
   }));
   const sanitizedCaveat = input.conversation.caveat ? sanitize(input.conversation.caveat) : undefined;
   const completeness = verifyAgreementCompleteness(input, candidate, completenessCandidate);
-  const confirmationToken = completenessCandidate
-    ? agreementCompletenessConfirmationToken(input, candidate, completenessCandidate)
+  const confirmationToken = completenessCandidate && confirmationLedgerBytes
+    ? agreementCompletenessConfirmationToken(input, confirmationLedgerBytes)
     : undefined;
   const extractionCompletenessConfirmed = confirmationToken !== undefined &&
     extractionConfirmationToken === confirmationToken;

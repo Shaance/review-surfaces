@@ -399,11 +399,21 @@ test("non-material turns become trusted only after an operator confirms the exac
   assert.equal(audit.completeness.structurally_verified, true);
   assert.equal(audit.completeness.rejections.length, 0);
 
-  const token = agreementCompletenessConfirmationToken(input, candidate, completeness);
-  const confirmed = groundAgreementAudit(input, candidate, completeness, token);
+  const ledgerBytes = {
+    candidate: `${JSON.stringify(candidate)}\n`,
+    completeness: `${JSON.stringify(completeness)}\n`
+  };
+  const token = agreementCompletenessConfirmationToken(input, ledgerBytes);
+  const confirmed = groundAgreementAudit(input, candidate, completeness, token, ledgerBytes);
   assert.equal(confirmed.status, "no_mismatch_found");
   assert.equal(confirmed.completeness.verified, true);
   assert.equal(confirmed.completeness.operator_confirmed, true);
+  const tampered = groundAgreementAudit(input, candidate, completeness, token, {
+    ...ledgerBytes,
+    candidate: `${ledgerBytes.candidate} `
+  });
+  assert.equal(tampered.status, "cannot_audit");
+  assert.equal(tampered.completeness.operator_confirmed, false);
 });
 
 test("a supporting unresolved human boundary still blocks a clean result", () => {
@@ -623,12 +633,22 @@ test("an independently covered clean extraction can produce a real clean result"
     missing_agreements: [],
     limitations: []
   });
-  const unconfirmed = groundAgreementAudit(input, candidate, completeness);
+  const ledgerBytes = {
+    candidate: `${JSON.stringify(candidate)}\n`,
+    completeness: `${JSON.stringify(completeness)}\n`
+  };
+  const unconfirmed = groundAgreementAudit(input, candidate, completeness, undefined, ledgerBytes);
   assert.equal(unconfirmed.status, "cannot_audit");
   assert.equal(unconfirmed.completeness.structurally_verified, true);
   assert.equal(unconfirmed.completeness.operator_confirmed, false);
   assert.ok(unconfirmed.completeness.confirmation_token);
-  const audit = groundAgreementAudit(input, candidate, completeness, unconfirmed.completeness.confirmation_token);
+  const audit = groundAgreementAudit(
+    input,
+    candidate,
+    completeness,
+    unconfirmed.completeness.confirmation_token,
+    ledgerBytes
+  );
   assert.equal(audit.status, "no_mismatch_found");
   assert.equal(audit.completeness.verified, true);
   const markdown = renderAgreementAuditMarkdown(audit);
