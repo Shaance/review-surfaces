@@ -10,7 +10,7 @@ import { CommandTranscript, commandTranscriptInputDir, commandTranscriptOutputPa
 import { ReviewSurfacesConfig } from "../config/config";
 import { ConversationEvent, ConversationFormat } from "../conversation/events";
 import { discoverConversationSession } from "../conversation/discovery";
-import { loadConversationEvents, normalizeConversationText, writeNormalizedConversation } from "../conversation/ingest";
+import { normalizeConversationText, writeNormalizedConversation } from "../conversation/ingest";
 import { filterPathsByPatterns, walkFiles } from "../core/glob";
 import { ensureDir, fileExists, hashFile, isRegularFile, writeJson, writeText } from "../core/files";
 import { VERSION } from "../core/version";
@@ -29,7 +29,7 @@ import {
   TEST_RESULTS_SCHEMA_VERSION,
   TestResults
 } from "../tests-evidence/junit";
-import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectHeadCommits, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveMergeBaseSha } from "./git";
+import { ChangedFile, collectChangedFiles, collectCommits, collectDiff, collectGitInfo, collectHeadCommits, collectWorkingTreeSnapshot, commitTimeAtRef, gitInfoDiagnostics, GitInfo, hasReviewableWorkingTreeChanges, isCurrentStateHeadRequest, readFileAtRef, readFileBytesAtRef, resolveGitRefSha, resolveMergeBaseSha } from "./git";
 import { computeSemanticChangeFacts, emptySemanticChangeFacts, SemanticChangeFacts } from "../risks/semantic-diff";
 import { computeDependencyFacts, DependencyFact } from "../risks/dependency-facts";
 import { computeConfigFacts, ConfigFact } from "../risks/config-facts";
@@ -181,6 +181,10 @@ export interface CollectionResult {
   // R6: whether the diff/changed-file set came from the base...head range or
   // fell back to a bare working-tree diff (e.g. base ref did not resolve).
   diff_source: "range" | "working_tree_fallback";
+  /** Exact merge-base commit used for the reviewed range and OLD-side reads. */
+  mergeBaseSha?: string;
+  /** Exact redacted diff snapshot used for every downstream audit decision. */
+  reviewedDiff?: string;
   // Phase 1.5: the redacted, harness-normalized conversation event stream
   // (incl. tool_use/tool_result evidence). Produced ONCE here, BEFORE privacy is
   // assembled, so both buildMethodology call sites READ it instead of re-parsing,
@@ -192,6 +196,16 @@ export interface CollectionResult {
   // The adapter that matched the conversation file (harness label), e.g.
   // "claude-code". Absent when no conversation was ingested.
   conversationSource?: string;
+  /** SHA-256 of the exact source bytes normalized into conversationEvents. */
+  conversationSourceHash?: string;
+  /** Ordered immutable transcript snapshots used by audit provenance. */
+  conversationSources?: Array<{
+    id: string;
+    sha256: string;
+    selection: "explicit" | "discovered";
+    adapter: string;
+    events: ConversationEvent[];
+  }>;
   // Phase 5b (PRIVACY.1): the repo-relative, isSafeRepositoryPath-clean path to
   // persist as the conversation EvidenceRef anchor. Set ONLY for an auto-discovered
   // (non-repo) session — its absolute home-dir path must never reach a persisted
@@ -252,6 +266,14 @@ export interface CollectOptions {
   // buildMethodology. Folded into the signature so a conversation edit is a cache
   // miss. Absent => no conversation flag was supplied.
   conversationPath?: string;
+  /** Explicit later sessions, ordered after conversationPath. */
+  additionalConversationPaths?: string[];
+  /** Fail closed when an explicitly requested primary transcript cannot be normalized. */
+  strictConversationInputs?: boolean;
+  /** Re-read the worktree before returning and reject evidence assembled across mutations. */
+  strictEvidenceSnapshot?: boolean;
+  /** @internal Deterministic seam for the collector's mutation-race regression test. */
+  beforeEvidenceSnapshotValidation?: () => void;
   // Resolved --conversation-format override (claude-code|codex|cursor|normalized).
   // Absent => auto-detect by content shape. The RESOLVED adapter label is folded
   // into the cache signature so a format change over the same bytes is a miss.
@@ -301,7 +323,78 @@ const ROOT_ARTIFACT_PATH_PATTERNS = [
   /^commands\/[^/]+\.json$/,
   /^prompts\/agent-enrichment\.(md|schema\.json)$/
 ];
+
+interface CollectedConversationSnapshot {
+  source: NonNullable<CollectionResult["conversationSources"]>[number];
+  inputPath: string;
+}
+
+async function loadExplicitConversationSnapshot(
+  cwd: string,
+  conversationPath: string,
+  format: ConversationFormat | undefined,
+  id: string,
+  requiredLabel?: string
+): Promise<CollectedConversationSnapshot | undefined> {
+  const snapshot = await fs.promises.readFile(path.resolve(cwd, conversationPath)).catch(() => undefined);
+  const collected = snapshot
+    ? normalizeCollectedConversationSnapshot(conversationPath, snapshot, format, id, "explicit")
+    : undefined;
+  if (!collected && requiredLabel) {
+    throw new Error(`${requiredLabel} was unreadable or unmatched`);
+  }
+  return collected;
+}
+
+function normalizeCollectedConversationSnapshot(
+  inputPath: string,
+  snapshot: Buffer,
+  format: ConversationFormat | undefined,
+  id: string,
+  selection: "explicit" | "discovered",
+  knownHash?: string
+): CollectedConversationSnapshot | undefined {
+  const loaded = normalizeConversationText(inputPath, snapshot.toString("utf8"), format);
+  if (!loaded) return undefined;
+  return {
+    inputPath,
+    source: {
+      id,
+      sha256: knownHash ?? crypto.createHash("sha256").update(snapshot).digest("hex"),
+      selection,
+      adapter: loaded.adapter,
+      events: loaded.events.map((event) => id === "conversation-1"
+        ? event
+        : { ...event, id: `${id}:${event.id}` })
+    }
+  };
+}
+
 export async function collectInputs(options: CollectOptions): Promise<CollectionResult> {
+  const explicitPrimarySnapshot = options.conversationPath
+    ? await loadExplicitConversationSnapshot(
+        options.cwd,
+        options.conversationPath,
+        options.conversationFormat,
+        "conversation-1",
+        options.strictConversationInputs ? "conversation" : undefined
+      )
+    : undefined;
+  const additionalConversationSnapshots = await Promise.all(
+    (options.additionalConversationPaths ?? []).map((conversationPath, index) =>
+      loadExplicitConversationSnapshot(
+        options.cwd,
+        conversationPath,
+        options.conversationFormat,
+        `conversation-${index + 2}`,
+        `additional conversation ${index + 1}`
+      ) as Promise<CollectedConversationSnapshot>
+    )
+  );
+  const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
+  const pinnedBaseRef = git.base_sha ?? options.baseRef;
+  const pinnedHeadRef = git.head_sha !== "unknown" ? git.head_sha : options.headRef;
+  const mergeBaseSha = resolveMergeBaseSha(options.cwd, pinnedBaseRef, pinnedHeadRef);
   const outputDir = path.resolve(options.cwd, options.outputDir ?? options.config.output_dir);
   const inputsDir = path.join(outputDir, "inputs");
   const commandsOutputPath = commandTranscriptOutputPath(options.cwd, outputDir);
@@ -371,7 +464,6 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // resolved diff source. These are surfaced to stderr by the CLI; they are NOT
   // serialized into any byte-stable artifact.
   const diagnostics: string[] = [];
-  const git = collectGitInfo(options.cwd, options.baseRef, options.headRef);
   diagnostics.push(...gitInfoDiagnostics(options.cwd, options.baseRef));
   // COLD_START.7: working-tree/untracked files merge into the changed set only
   // for a literal-HEAD review; an explicitly pinned head gets the pure range.
@@ -381,20 +473,29 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const workingTreeSnapshot = includeWorkingTree
     ? collectWorkingTreeSnapshot(options.cwd, isExcludedWorkingTreePath)
     : undefined;
-  const changedFilesResult = collectChangedFiles(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isExcludedWorkingTreePath, workingTreeSnapshot);
+  const changedFilesResult = collectChangedFiles(options.cwd, pinnedBaseRef, pinnedHeadRef, includeWorkingTree, isExcludedWorkingTreePath, workingTreeSnapshot);
   diagnostics.push(...changedFilesResult.diagnostics);
   const allChangedFiles = changedFilesResult.files;
-  const changedFiles = allChangedFiles
+  const reviewableChangedFiles = (files: readonly ChangedFile[]): ChangedFile[] => files
     .filter((file) => !ignore.isIgnored(file.path))
     // COLLECTOR.6: a rename whose SOURCE is ignored (but destination is not) must not
     // leak the ignored old_path into changed_files.json or any onward surface — drop
     // it before it is persisted (Codex P2).
     .map((file) => (file.old_path !== undefined && ignore.isIgnored(file.old_path) ? { ...file, old_path: undefined } : file));
+  const changedFiles = reviewableChangedFiles(allChangedFiles);
+  if (options.strictEvidenceSnapshot && workingTreeSnapshot) {
+    if (workingTreeSnapshot.status === undefined) {
+      throw new Error("agreement-audit could not verify working-tree status; repair Git state before retrying");
+    }
+    if (hasReviewableWorkingTreeChanges(workingTreeSnapshot, isExcludedWorkingTreePath)) {
+      throw new Error("agreement-audit requires a clean working tree; commit or stash in-scope changes before retrying");
+    }
+  }
   const ignoredChangedFiles = [...new Set([
     ...allChangedFiles.filter((file) => ignore.isIgnored(file.path)).map((file) => file.path),
     ...(workingTreeSnapshot?.paths ?? []).filter(ignore.isIgnored)
   ])].sort(compareStrings);
-  const diffResult = collectDiff(options.cwd, options.baseRef, options.headRef, includeWorkingTree, isExcludedWorkingTreePath, workingTreeSnapshot);
+  const diffResult = collectDiff(options.cwd, pinnedBaseRef, pinnedHeadRef, includeWorkingTree, isExcludedWorkingTreePath, workingTreeSnapshot);
   diagnostics.push(...diffResult.diagnostics);
   // COLD_START.7: keep diff.patch consistent with the changed-file set — drop
   // hunks for artifact paths that are not reviewed changes (pure working-tree
@@ -416,7 +517,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // side) so the two computations agree.
   const structuredFactDiff = parseStructuredDiff(filteredDiff);
   const baseReadRef = options.baseRef
-    ? resolveMergeBaseSha(options.cwd, options.baseRef, git.head_sha || options.headRef || "HEAD") ?? options.baseRef
+    ? mergeBaseSha ?? pinnedBaseRef
     : "";
   const readBaseFact = baseReadRef
     ? (filePath: string): string | undefined => readFileAtRef(options.cwd, baseReadRef, filePath)
@@ -477,7 +578,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const redactedDiff = options.config.privacy.redact_secrets
     ? secretScan
     : { text: filteredDiff, redactions: [], blocked: secretScan.blocked };
-  const commits = collectCommits(options.cwd, options.baseRef, options.headRef);
+  const commits = collectCommits(options.cwd, pinnedBaseRef, pinnedHeadRef);
   const docs = docPaths.map((docPath) => ({ path: docPath, kind: classifyDoc(docPath) }));
   const tests = testPaths.map((testPath) => ({ path: testPath, kind: "test" }));
   const repoIndex = buildRepoIndex({ cwd: options.cwd, changedFiles, repositoryFiles });
@@ -489,6 +590,9 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // events and the methodology surface degrades to conversation_log_missing.
   let conversationEvents: ConversationEvent[] | undefined;
   let conversationSource: string | undefined;
+  let conversationSourceHash: string | undefined;
+  const conversationSources: NonNullable<CollectionResult["conversationSources"]> = [];
+  const conversationInputHashes: Array<{ path: string; hash: string }> = [];
   let conversationEvidencePath: string | undefined;
   // Phase 5b (D4): `--conversation` ALWAYS wins; otherwise auto-discover the single
   // harness session for this repo (read-only). Discovery returns the ABSOLUTE
@@ -503,7 +607,7 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
           cwd: options.cwd,
           changedFiles: [...new Set(changedFiles.flatMap((file) => [file.path, file.old_path].filter((value): value is string => Boolean(value))))],
           headSha: git.head_sha,
-          rangeCommitShas: collectHeadCommits(options.cwd, options.baseRef, options.headRef).map((commit) => commit.sha),
+          rangeCommitShas: collectHeadCommits(options.cwd, pinnedBaseRef, pinnedHeadRef).map((commit) => commit.sha),
           headCommittedAt: git.head_sha !== "unknown" ? commitTimeAtRef(options.cwd, git.head_sha) : undefined,
           workingTreeDirty: changedFiles.some((file) => file.source === "working_tree")
         })
@@ -535,22 +639,33 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   }
   const resolvedConversationPath = options.conversationPath ?? discovered?.path;
   if (resolvedConversationPath !== undefined) {
-    // A discovered session is parsed from its discovery-time SNAPSHOT (never a
-    // re-read), so parsing and the cache-signature hash see identical bytes even if
-    // the live session grows mid-run (Codex P2). An explicit path is read normally.
-    const loaded = discovered
-      ? normalizeConversationText(discovered.path, discovered.content, options.conversationFormat)
-      : await loadConversationEvents(options.cwd, resolvedConversationPath, options.conversationFormat);
-    if (loaded) {
-      conversationEvents = loaded.events;
-      conversationSource = loaded.adapter;
+    // A discovered session is parsed from its discovery-time snapshot; explicit
+    // files reuse the collector-owned preflight snapshot loaded before repo work.
+    const collected = discovered
+      ? normalizeCollectedConversationSnapshot(
+          discovered.path,
+          Buffer.from(discovered.content, "utf8"),
+          options.conversationFormat,
+          "conversation-1",
+          "discovered",
+          discovered.hash
+        )
+      : explicitPrimarySnapshot;
+    if (collected) {
+      const { source } = collected;
+      conversationSource = source.adapter;
+      conversationSourceHash = source.sha256;
+      conversationSources.push(source);
+      conversationInputHashes.push({
+        path: collected.inputPath,
+        hash: source.sha256
+      });
       // PRIVACY.1: a discovered session anchors to the gitignored normalized log,
       // never its absolute home-dir path. For an --out OUTSIDE the repo the log is
       // written outside too, so a repo-relative anchor would point at a file that
       // does not exist — use the PATHLESS (event-id + label) evidence form there
       // (the conversation-kind ref validates on its known event_id — Codex P2).
       conversationEvidencePath = discovered ? repoRelativeNormalizedLogAnchor(outputDirRelative) : undefined;
-      await writeNormalizedConversation(outputDir, loaded.events);
       // Announce the chosen adapter on stderr (via diagnostics), mirroring the
       // collection-diagnostics pattern — stdout ordering contracts must not move.
       // For a discovered session the absolute picked path appears HERE (stderr)
@@ -560,17 +675,28 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
       // note: the session does not reference the reviewed range and may be the wrong
       // or a stale session.
       if (!discovered) {
-        diagnostics.push(`Conversation adapter: ${loaded.adapter} (${resolvedConversationPath})`);
+        diagnostics.push(`Conversation adapter: ${source.adapter} (${resolvedConversationPath})`);
       } else {
         diagnostics.push(
           `Auto-discovered conversation session: ${discovered.path} ` +
-          `(adapter ${loaded.adapter}; confidence ${discovered.confidence}; mutated ${discovered.mutatedChangedFiles} changed file(s); ` +
+          `(adapter ${source.adapter}; confidence ${discovered.confidence}; mutated ${discovered.mutatedChangedFiles} changed file(s); ` +
           `weak matches ${discovered.weakMatchedFiles}; reasons ${discovered.reasonCodes.join(",")})`
         );
       }
     } else {
       diagnostics.push(`Conversation log unmatched or unreadable: ${resolvedConversationPath}`);
     }
+  }
+
+  for (const collected of additionalConversationSnapshots) {
+    conversationSources.push(collected.source);
+    conversationInputHashes.push({ path: collected.inputPath, hash: collected.source.sha256 });
+    diagnostics.push(`Conversation adapter: ${collected.source.adapter} (${collected.inputPath})`);
+  }
+  if (conversationSources.length > 0) {
+    conversationSource ??= conversationSources[0].adapter;
+    conversationSourceHash ??= conversationSources[0].sha256;
+    conversationEvents = conversationSources.flatMap((source) => source.events);
   }
 
   // review-surfaces.PRIVACY.7(b): fold a conversation block signal into BOTH the
@@ -656,10 +782,10 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   const lcovSource = resolveLcovSource(options.cwd, options.coverageOutputPath);
 
   const flagInputHashes = await hashFlagInputs(options.cwd, [
-    // Only the EXPLICIT --conversation file is hashed by re-reading here; an
-    // auto-discovered session is folded below from its discovery-time SNAPSHOT hash
-    // (re-reading the live path here could hash bytes the audit never saw — Codex P2).
-    { kind: "conversation", path: options.conversationPath },
+    // Conversation bytes are folded below from the exact normalization snapshot
+    // for both explicit and discovered sources. Re-reading here could stamp a
+    // different live file than the audit actually inspected.
+    { kind: "conversation", path: undefined },
     { kind: "coverage", path: options.coverageOutputPath },
     { kind: "coverage-lcov", path: lcovSource?.sourcePath },
     { kind: "agent-input", path: options.agentInputPath },
@@ -671,19 +797,31 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // Phase 1.5: fold the RESOLVED adapter label into the signature so the same
   // conversation bytes parsed under a different adapter (a forced
   // --conversation-format, or a shape that now detects differently) is a cache
-  // miss. The conversation file content is already hashed above via the
-  // { kind: "conversation" } flag-input; this adds only the label. Appended only
-  // when a conversation was ingested, so no-conversation runs stay byte-identical.
-  if (conversationSource !== undefined) {
-    flagInputHashes.push({ kind: "conversation-format", path: conversationSource, algorithm: "sha256", hash: conversationSource });
+  // miss. The exact conversation snapshot is hashed below; this adds only the
+  // resolved adapter label. Appended only when a conversation was ingested, so
+  // no-conversation runs stay byte-identical.
+  for (const source of conversationSources) {
+    flagInputHashes.push({
+      kind: "conversation-format",
+      path: source.id,
+      algorithm: "sha256",
+      hash: source.adapter
+    });
   }
-  // Phase 5b: fold the auto-discovered session's CONTENT hash (the discovery-time
-  // snapshot — the exact bytes parsed) into the signature, so a live session that
-  // grew legitimately busts the cache and a static fixture recurs identically. The
-  // absolute path is the signature locus only (internal cache key, never a persisted
-  // public artifact). Explicit --conversation files are already hashed above.
-  if (discovered !== undefined) {
-    flagInputHashes.push({ kind: "conversation", path: discovered.path, algorithm: "sha256", hash: discovered.hash });
+  // Phase 5b: fold the exact parsed conversation snapshot into the signature for
+  // both explicit and discovered sources. A live session that grows legitimately
+  // busts the cache, while parsing and hashing can never observe different bytes.
+  // The absolute discovered path is an internal signature locus only and never a
+  // persisted public artifact.
+  if (conversationInputHashes.length > 0) {
+    for (const source of conversationInputHashes) {
+      flagInputHashes.push({
+        kind: "conversation",
+        path: source.path,
+        algorithm: "sha256",
+        hash: source.hash
+      });
+    }
   } else if (conversationDiscovery !== undefined) {
     // Rejected discovery still changes reviewer-visible methodology. Fold only
     // its safe persisted provenance into the cache key (never the private path
@@ -777,6 +915,19 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
   // readers (cache snapshot, per-artifact loaders, artifact stamping) all go
   // through the pipeline artifact store, which reads the on-disk manifest.json
   // directly, so they see the map regardless.
+  if (options.strictEvidenceSnapshot) {
+    options.beforeEvidenceSnapshotValidation?.();
+    const finalWorkingTreeSnapshot = includeWorkingTree ? collectWorkingTreeSnapshot(options.cwd, isExcludedWorkingTreePath) : undefined;
+    const currentHeadSha = includeWorkingTree ? resolveGitRefSha(options.cwd, "HEAD") : git.head_sha;
+    if ((finalWorkingTreeSnapshot && finalWorkingTreeSnapshot.status === undefined) ||
+      (finalWorkingTreeSnapshot && hasReviewableWorkingTreeChanges(finalWorkingTreeSnapshot, isExcludedWorkingTreePath)) ||
+      currentHeadSha !== git.head_sha) {
+      throw new Error("repository changed while agreement-audit evidence was being collected; retry from a stable worktree");
+    }
+  }
+
+  if (conversationEvents) await writeNormalizedConversation(outputDir, conversationEvents);
+
   const coverageRecord = lcovSource
     ? buildCoverageRecord(options.cwd, git.head_sha, lcovSource, changedFiles.map((file) => file.path))
     : undefined;
@@ -872,8 +1023,12 @@ export async function collectInputs(options: CollectOptions): Promise<Collection
     // git-info step and the changed-files/diff fallbacks).
     diagnostics: [...new Set(diagnostics)],
     diff_source: diffSource,
+    mergeBaseSha: mergeBaseSha?.toLowerCase(),
+    reviewedDiff: redactedDiff.text,
     conversationEvents,
     conversationSource,
+    conversationSourceHash,
+    conversationSources: conversationSources.length > 0 ? conversationSources : undefined,
     conversationEvidencePath,
     conversationDiscovery,
     semanticChangeFacts,

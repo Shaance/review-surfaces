@@ -1,0 +1,22 @@
+{
+  "version": "0.1.0",
+  "repository": "example/worker",
+  "base_sha": "5555555555555555555555555555555555555555",
+  "head_sha": "6666666666666666666666666666666666666666",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session", "actor": "user", "kind": "message", "text": "Make the worker timeout configurable and add a regression test.", "order": 0 },
+      { "id": "a1", "source_id": "session", "actor": "assistant", "kind": "message", "text": "I will thread the configured timeout through and cover it with a focused test.", "order": 1 },
+      { "id": "a2", "source_id": "session", "actor": "assistant", "kind": "message", "text": "The focused worker tests pass at this head.", "order": 2 }
+    ]
+  },
+  "diff": [
+    { "path": "src/worker.ts", "side": "add", "line": 14, "text": "const timeoutMs = config.workerTimeoutMs;" },
+    { "path": "tests/worker.test.ts", "side": "add", "line": 38, "text": "assert.equal(worker.timeoutMs, 2500);" }
+  ],
+  "commands": [
+    { "id": "worker-tests", "command": "pnpm test tests/worker.test.ts", "status": "passed", "head_sha": "6666666666666666666666666666666666666666" }
+  ]
+}

@@ -1,4 +1,5 @@
-export const AGREEMENT_AUDIT_VERSION = "0.1.0" as const;
+export const AGREEMENT_AUDIT_INPUT_VERSION = "0.1.0" as const;
+export const AGREEMENT_AUDIT_RESULT_VERSION = "0.2.0" as const;
 
 export const AGREEMENT_KINDS = [
   "human_instruction",
@@ -13,6 +14,7 @@ export const CONVERSATION_SCOPE_STATUSES = ["complete", "partial", "ambiguous", 
 export const CONVERSATION_ACTORS = ["user", "assistant", "agent", "tool"] as const;
 export const CONVERSATION_SOURCE_SELECTIONS = ["explicit", "discovered"] as const;
 export const COMMAND_STATUSES = ["passed", "failed", "unknown"] as const;
+export const COMPLETENESS_DISPOSITIONS = ["represented", "non_material"] as const;
 
 export type ConversationScopeStatus = (typeof CONVERSATION_SCOPE_STATUSES)[number];
 export type AgreementKind = (typeof AGREEMENT_KINDS)[number];
@@ -21,10 +23,9 @@ export type AgreementMateriality = (typeof AGREEMENT_MATERIALITIES)[number];
 export type AuditStatus = "needs_human_decision" | "no_mismatch_found" | "cannot_audit";
 
 export function agreementNeedsHumanDecision(
-  agreement: Pick<AgreementCandidate, "state" | "materiality">
+  agreement: Pick<AgreementCandidate, "kind" | "state" | "materiality">
 ): boolean {
-  return agreement.state === "diverged" ||
-    (agreement.materiality === "material" && agreement.state === "unresolved");
+  return agreement.state === "diverged" || agreement.state === "unresolved";
 }
 
 export function agreementKindAllowsActor(
@@ -82,7 +83,7 @@ export interface AuditCommandEvidence {
 }
 
 export interface AgreementAuditInput {
-  version: typeof AGREEMENT_AUDIT_VERSION;
+  version: typeof AGREEMENT_AUDIT_INPUT_VERSION;
   repository: string;
   base_sha: string;
   head_sha: string;
@@ -159,6 +160,35 @@ export interface AgreementAuditCandidate {
   limitations: string[];
 }
 
+export interface AgreementCompletenessDisposition {
+  event_id: string;
+  disposition: (typeof COMPLETENESS_DISPOSITIONS)[number];
+  /** Required when represented; every key must cite this exact event. */
+  agreement_keys: string[];
+  /** Required when non_material; explains why the event creates no agreement. */
+  reason?: string;
+}
+
+/** Separate second-pass claim about extraction coverage. */
+export interface AgreementCompletenessCandidate {
+  complete: boolean;
+  dispositions: AgreementCompletenessDisposition[];
+  missing_agreements: string[];
+  limitations: string[];
+}
+
+export interface AgreementCompletenessResult {
+  /** True only after structural validation plus explicit operator confirmation. */
+  verified: boolean;
+  structurally_verified: boolean;
+  operator_confirmed: boolean;
+  /** Hash binding operator confirmation to the exact input and model-produced ledgers. */
+  confirmation_token?: string;
+  dispositions: AgreementCompletenessDisposition[];
+  limitations: string[];
+  rejections: string[];
+}
+
 export interface GroundedDiffCitation extends CandidateDiffCitation {
   validated: true;
 }
@@ -171,6 +201,14 @@ export interface GroundedConversationEvidence {
   id: string;
   source_id: string;
   text: string;
+  order: number;
+  /** Bounded adjacent turns make an exact event understandable without hunting. */
+  context: Array<{
+    id: string;
+    source_id: string;
+    actor: AuditConversationEvent["actor"];
+    text: string;
+  }>;
 }
 
 export interface GroundedAgreement extends Omit<AgreementCandidate, "diff_citations" | "command_ids"> {
@@ -185,15 +223,35 @@ export interface AgreementAuditRejection {
 }
 
 export interface AgreementAudit {
-  version: typeof AGREEMENT_AUDIT_VERSION;
+  version: typeof AGREEMENT_AUDIT_RESULT_VERSION;
   repository: string;
   base_sha: string;
   head_sha: string;
   status: AuditStatus;
   candidate_complete: boolean;
+  completeness: AgreementCompletenessResult;
   final_goal: AgreementAuditCandidate["final_goal"] | null;
   agreements: GroundedAgreement[];
   conversation: Pick<AuditConversationScope, "status" | "sources" | "caveat">;
   limitations: string[];
   rejections: AgreementAuditRejection[];
+  comparison?: AgreementAuditComparison;
 }
+
+export interface AgreementAuditComparison {
+  previous_head_sha: string;
+  new_decision_keys: string[];
+  unchanged_decision_keys: string[];
+  resolved_decision_keys: string[];
+  unverified_previous_decision_keys: string[];
+}
+
+export type ComparableAgreementAudit = Pick<
+  AgreementAudit,
+  "version" | "repository" | "head_sha"
+> & {
+  agreements: Array<Pick<
+    GroundedAgreement,
+    "key" | "kind" | "state" | "materiality" | "conversation_event_ids"
+  >>;
+};

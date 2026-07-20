@@ -1,25 +1,106 @@
 # review-surfaces
 
-**A conversation-grounded agreement audit for agent-written code.** The product
-is being reset around one question: did the change match the final agreement
-between the human and the coding agent?
+**A conversation-grounded agreement audit for agent-written code.** It answers
+one review question: did this exact change match the final agreement between the
+human and the coding agent?
 
-Milestone one is an isolated, benchmarked agreement-audit spine. It validates
-citations within supplied transcript, diff, and command evidence, then renders
-divergence, unresolved uncertainty, and the decision the human needs to make.
-It does not yet independently collect or authenticate those inputs; trusted Git
-and conversation collection is the next milestone. Missing or incomplete
-conversation scope is inconclusive, and never falls back to generic review noise.
-Milestone one also refuses to declare a clean result until agreement extraction
-has an independent completeness verifier. The number of decisions follows the
-evidence; there is no universal word or item cap. See the
-[agreement-audit v0 contract](https://github.com/Shaance/review-surfaces/blob/main/docs/agreement-audit-v0.md).
+`review-surfaces audit` now owns the complete default journey. It resolves an
+immutable base/head range, snapshots and normalizes the producing conversation,
+indexes exact-head command evidence, runs agreement extraction plus a separate
+completeness pass, grounds every citation, and writes a decision-first result.
+It does not fall back to generic review noise.
 
-The legacy packet compiler remains temporarily available while the new thesis is
-tested against an equally equipped plain-agent baseline. It is not the target
-product model.
+## Quickstart
 
-## Legacy packet compiler (temporary)
+Run from a clean Git working tree with the conversation that produced the change
+available to auto-discovery:
+
+```bash
+cd your-repo
+export GOOGLE_GENERATIVE_AI_API_KEY=... # or select an OpenAI/Anthropic model
+npx review-surfaces audit --base origin/main
+open .review-surfaces/audit.md
+```
+
+Auto-discovery can identify a likely producing session, but cannot prove that no
+other session contains a governing correction. Its first result is therefore
+conservative. After checking the selected scope, rerun with
+`--conversation-scope complete`. The separate model pass can check structure,
+but cannot prove it found every clause inside a turn. Review the generated
+candidate and completeness ledgers, then rerun with the exact
+`--confirm-extraction <token>` printed in `audit.json`. The token binds the
+confirmation to those exact input and ledger bytes; changed output cannot reuse it.
+The confirmation rerun revalidates and republishes those saved ledgers without
+calling the model again.
+
+The audit provider defaults to AI SDK/Gemini for this command. Select another
+model with `--model openai:<model>` or `--model anthropic:<model>`. For a fully
+offline agent handoff, use `--provider agent-file --agent-input <json>`; the file
+contains separate `agreement-audit` and `agreement-completeness` stage payloads.
+
+If auto-discovery cannot prove which session produced the change, choose it
+explicitly. Every selected transcript set is conservative by default; assert
+complete scope only after confirming it includes every governing session:
+
+```bash
+npx review-surfaces audit \
+  --base origin/main \
+  --conversation /path/to/session.jsonl \
+  --additional-conversations /path/to/later-session.jsonl,/path/to/final-session.jsonl \
+  --conversation-scope complete
+```
+
+The result is `.review-surfaces/audit.md` plus `audit.json`. Resumable collected
+input, extraction, and completeness artifacts remain beside them. Record local
+validation before the audit when a claim such as “tests pass” matters:
+
+```bash
+npx review-surfaces run -- pnpm test
+npx review-surfaces audit --base origin/main
+```
+
+On a later push, compare stable reviewer decisions with the prior artifact:
+
+```bash
+npx review-surfaces audit --base origin/main \
+  --previous-audit /path/to/previous/audit.json
+```
+
+## What the result means
+
+- **Needs your decision** separates the reviewer choice from the recommended
+  author follow-up and shows bounded conversation context, exact diff lines, and
+  exact-head commands.
+- **No agreement mismatch found** is available only when the conversation scope
+  is complete, every agreement is grounded to one auditable event, a separate
+  pass gives every eligible event one validated disposition, and the operator
+  confirms the exact extracted ledgers with their content-bound token.
+- **Audit incomplete** is a protective result for missing/ambiguous scope,
+  rejected evidence, provider truncation, privacy blocks, or unverified clean
+  extraction. It never means the change is aligned.
+
+Deleted-line links point to the merge-base blob; added and context lines point to
+the reviewed head. A literal working-tree diff is refused because it cannot
+produce immutable evidence links—commit the change or pass an explicitly pinned
+head.
+
+The number of decisions follows the evidence rather than an item cap. See the
+[agreement-audit v0 contract](https://github.com/Shaance/review-surfaces/blob/main/docs/agreement-audit-v0.md)
+and the [benchmark protocol](https://github.com/Shaance/review-surfaces/blob/main/bench/agreement/README.md).
+
+## Evidence status
+
+The checked-in calibration benchmark tests grounding correctness and compares
+the review-surfaces prompt with an equally equipped plain-agent prompt. Frozen
+holdout cases are a separate release input. Neither is presented as proof that
+reviewers prefer or work faster with the product: that claim requires blinded,
+representative reviewer judgments and remains explicitly unproven until those
+results exist.
+
+<details>
+<summary>Legacy packet compiler reference (temporary compatibility surface)</summary>
+
+## Legacy packet compiler
 
 The existing compiler turns a PR into an approval surface:
 
@@ -323,9 +404,14 @@ is developed spec-first and dogfood-first).
   agent-first, reviewing itself at every phase.
 - `.review-surfaces/` — generated, local-first artifacts.
 
+</details>
+
 ## License
 
 [MIT](https://github.com/Shaance/review-surfaces/blob/main/LICENSE).
+
+<details>
+<summary>Legacy packet compiler evaluation scoreboard</summary>
 
 <!-- review-surfaces:eval-scoreboard -->
 ### Eval scoreboard
@@ -350,3 +436,5 @@ The seeded-regression eval harness (run inside `pnpm run test`) currently catche
 
 _Generated by `review-surfaces scoreboard` from `.review-surfaces/eval_scoreboard.json`; do not edit inside the markers._
 <!-- /review-surfaces:eval-scoreboard -->
+
+</details>

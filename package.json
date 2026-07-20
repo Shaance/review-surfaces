@@ -39,6 +39,7 @@
     "local-gate": "./scripts/local-gate.sh",
     "review-surfaces": "pnpm run build && node bin/review-surfaces.js",
     "agreement-audit": "node bin/agreement-audit.js",
+    "agreement-audit:holdout-check": "node bin/agreement-audit.js benchmark-check --manifest bench/agreement/holdout/manifest.json --comparison bench/agreement/holdout/results.pending.json",
     "copy-env": "./scripts/copy-env.sh",
     "prepublishOnly": "pnpm run local-gate"
   },
@@ -48,7 +49,9 @@
     "dist/bin/privacy-runtime.js",
     "dist/src",
     "schemas",
+    "bench/agreement",
     "docs/example",
+    "docs/agreement-audit-v0.md",
     "CHANGELOG.md"
   ],
   "engines": {

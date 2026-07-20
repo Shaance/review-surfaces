@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "case_id": "keyboard-boundary",
+  "source": "synthetic",
+  "clean": false,
+  "agreements": [
+    { "id": "open-evidence", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u1"], "expected_diff_coordinates": [{ "path": "src/ReviewCard.tsx", "side": "add", "line": 27 }], "expected_command_ids": [] },
+    { "id": "interactive-card", "kind": "agent_commitment", "materiality": "supporting", "expected_state": "fulfilled", "governing_event_ids": ["a1"], "expected_diff_coordinates": [{ "path": "src/ReviewCard.tsx", "side": "add", "line": 27 }], "expected_command_ids": [] },
+    { "id": "keyboard-boundary", "kind": "human_boundary", "materiality": "material", "expected_state": "diverged", "governing_event_ids": ["u2"], "expected_diff_coordinates": [{ "path": "src/ReviewCard.css", "side": "delete", "line": 42 }], "expected_command_ids": [] },
+    { "id": "keyboard-commitment", "kind": "agent_commitment", "materiality": "material", "expected_state": "diverged", "governing_event_ids": ["a2"], "expected_diff_coordinates": [{ "path": "src/ReviewCard.css", "side": "delete", "line": 42 }], "expected_command_ids": [] }
+  ]
+}

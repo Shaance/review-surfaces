@@ -493,7 +493,8 @@ test("review-surfaces.CLI.1 supports top-level --help output", () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.ok(result.stdout.startsWith(`review-surfaces ${manifest.version}`));
-  assert.match(result.stdout, /Local-first human review decision cockpit/);
+  assert.match(result.stdout, /Conversation-grounded agreement audit/);
+  assert.match(result.stdout, /audit\s+Collect trusted evidence and write a verified agreement audit/);
   assert.doesNotMatch(result.stdout, /Local-first review packet compiler/);
   assert.match(result.stdout, /run\s+Execute a local command/);
   assert.match(result.stdout, /intent-mismatch\s+Render intent_mismatch\.md from human_review\.json/);

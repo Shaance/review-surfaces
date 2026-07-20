@@ -1,0 +1,22 @@
+{
+  "version": "0.1.0",
+  "repository": "example/reviewer-ui",
+  "base_sha": "3333333333333333333333333333333333333333",
+  "head_sha": "4444444444444444444444444444444444444444",
+  "conversation": {
+    "status": "complete",
+    "sources": [{ "id": "session", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "selection": "explicit" }],
+    "events": [
+      { "id": "u1", "source_id": "session", "actor": "user", "kind": "message", "text": "Make each review card open its evidence details.", "order": 0 },
+      { "id": "a1", "source_id": "session", "actor": "assistant", "kind": "message", "text": "I will make the cards interactive.", "order": 1 },
+      { "id": "t1", "source_id": "session", "actor": "tool", "kind": "tool_result", "text": "Located ReviewCard.tsx and its styles.", "order": 2 },
+      { "id": "u2", "source_id": "session", "actor": "user", "kind": "message", "text": "Keep the existing keyboard behavior and visible focus state.", "order": 3 },
+      { "id": "a2", "source_id": "session", "actor": "assistant", "kind": "message", "text": "I will preserve keyboard activation and focus visibility.", "order": 4 }
+    ]
+  },
+  "diff": [
+    { "path": "src/ReviewCard.tsx", "side": "add", "line": 27, "text": "<div className=\"card\" onClick={() => setOpen(true)}>" },
+    { "path": "src/ReviewCard.css", "side": "delete", "line": 42, "text": ".card:focus-visible { outline: 2px solid var(--focus); }" }
+  ],
+  "commands": []
+}

@@ -1,7 +1,8 @@
 import {
-  AGREEMENT_AUDIT_VERSION,
+  AGREEMENT_AUDIT_RESULT_VERSION,
   type AgreementAudit,
   type AgreementAuditCandidate,
+  type AgreementCompletenessCandidate,
   type AgreementAuditInput,
   type AgreementCandidate,
   type AuditConversationEvent,
@@ -11,15 +12,19 @@ import {
   agreementNeedsHumanDecision,
   auditDiffCoordinate
 } from "./contract";
+import { agreementCompletenessConfirmationToken, verifyAgreementCompleteness } from "./completeness";
 import { redactAuditText } from "./presentation-safety";
 
 export function groundAgreementAudit(
   input: AgreementAuditInput,
-  candidate: AgreementAuditCandidate
+  candidate: AgreementAuditCandidate,
+  completenessCandidate?: AgreementCompletenessCandidate,
+  extractionConfirmationToken?: string
 ): AgreementAudit {
   const rawLimitations = unique(candidate.limitations);
   const rejections: AgreementAudit["rejections"] = [];
   const events = new Map(input.conversation.events.map((event) => [event.id, event]));
+  const contextByEvent = buildAdjacentContext(input.conversation.events);
   const commands = new Map(input.commands.map((command) => [command.id, command]));
   const diffIndex = buildDiffIndex(input);
   const seenKeys = new Set<string>();
@@ -37,6 +42,13 @@ export function groundAgreementAudit(
     id: sanitize(source.id)
   }));
   const sanitizedCaveat = input.conversation.caveat ? sanitize(input.conversation.caveat) : undefined;
+  const completeness = verifyAgreementCompleteness(input, candidate, completenessCandidate);
+  const confirmationToken = completenessCandidate
+    ? agreementCompletenessConfirmationToken(input, candidate, completenessCandidate)
+    : undefined;
+  const extractionCompletenessConfirmed = confirmationToken !== undefined &&
+    extractionConfirmationToken === confirmationToken;
+  const extractionCompletenessVerified = completeness.verified && extractionCompletenessConfirmed;
 
   const finalGoalReasons = validateFinalGoal(candidate, events);
   if (finalGoalReasons.length > 0) {
@@ -60,7 +72,18 @@ export function groundAgreementAudit(
       conversation_event_ids: unique(agreement.conversation_event_ids),
       conversation_evidence: unique(agreement.conversation_event_ids).map((id) => {
         const event = events.get(id)!;
-        return { id, source_id: sanitize(event.source_id), text: sanitize(event.text) };
+        return {
+          id,
+          source_id: sanitize(event.source_id),
+          text: sanitize(event.text),
+          order: event.order,
+          context: (contextByEvent.get(id) ?? []).map((item) => ({
+            id: item.id,
+            source_id: item.source_id,
+            actor: item.actor,
+            text: sanitize(item.text)
+          }))
+        };
       }),
       diff_citations: diff_citations.map((citation) => ({
         ...citation,
@@ -89,25 +112,51 @@ export function groundAgreementAudit(
     limitations.push(`${uncoveredUserEvents.length} user turn(s) were not represented by the candidate: ${uncoveredUserEvents.join(", ")}.`);
   }
 
+  for (const limitation of completeness.limitations) limitations.push(sanitize(limitation));
+  for (const rejection of completeness.rejections) limitations.push(`Completeness verification rejected: ${sanitize(rejection)}.`);
+  if (completeness.verified && !extractionCompletenessConfirmed) {
+    limitations.push(
+      extractionConfirmationToken === undefined
+        ? `The separate completeness pass is model-generated and cannot certify that it found every clause; review the extracted ledger, then rerun with --confirm-extraction ${confirmationToken} to confirm these exact bytes.`
+        : "The extraction confirmation token did not match the current input and ledgers; review the newly generated artifacts before confirming them."
+    );
+  }
+
   const cannotAudit = input.conversation.status !== "complete" ||
     input.conversation.events.length === 0 ||
     agreements.length === 0 ||
     !candidate.complete ||
     rejections.length > 0 ||
-    finalGoalReasons.length > 0;
+    finalGoalReasons.length > 0 ||
+    uncoveredUserEvents.length > 0;
   const needsDecision = agreements.some(agreementNeedsHumanDecision);
-  limitations.push("Agreement extraction completeness was not independently verified; this decision list may not be exhaustive and a clean conclusion is unavailable.");
   if (sensitiveMaterialRedacted) limitations.push("Sensitive material was redacted from the persisted audit.");
 
   return {
-    version: AGREEMENT_AUDIT_VERSION,
+    version: AGREEMENT_AUDIT_RESULT_VERSION,
     repository: sanitizedRepository,
     base_sha: input.base_sha,
     head_sha: input.head_sha,
-    status: cannotAudit || !needsDecision
+    status: cannotAudit
       ? "cannot_audit"
-      : "needs_human_decision",
+      : needsDecision
+        ? "needs_human_decision"
+        : extractionCompletenessVerified
+          ? "no_mismatch_found"
+          : "cannot_audit",
     candidate_complete: candidate.complete,
+    completeness: {
+      verified: extractionCompletenessVerified,
+      structurally_verified: completeness.verified,
+      operator_confirmed: extractionCompletenessConfirmed,
+      ...(confirmationToken ? { confirmation_token: confirmationToken } : {}),
+      dispositions: completeness.dispositions.map((disposition) => ({
+        ...disposition,
+        ...(disposition.reason ? { reason: sanitize(disposition.reason) } : {})
+      })),
+      limitations: completeness.limitations.map(sanitize),
+      rejections: completeness.rejections.map(sanitize)
+    },
     final_goal: finalGoalReasons.length === 0 ? {
       text: sanitizedFinalGoalText,
       conversation_event_ids: unique(candidate.final_goal.conversation_event_ids)
@@ -121,6 +170,27 @@ export function groundAgreementAudit(
     limitations: unique(limitations),
     rejections
   };
+}
+
+function buildAdjacentContext(
+  events: readonly AuditConversationEvent[],
+): ReadonlyMap<string, AuditConversationEvent[]> {
+  const bySource = new Map<string, AuditConversationEvent[]>();
+  for (const event of events) {
+    const sourceEvents = bySource.get(event.source_id) ?? [];
+    sourceEvents.push(event);
+    bySource.set(event.source_id, sourceEvents);
+  }
+  const context = new Map<string, AuditConversationEvent[]>();
+  for (const sourceEvents of bySource.values()) {
+    sourceEvents.sort((left, right) => left.order - right.order);
+    sourceEvents.forEach((event, index) => {
+      context.set(event.id, [sourceEvents[index - 1], sourceEvents[index + 1]].filter(
+        (neighbor): neighbor is AuditConversationEvent => neighbor !== undefined
+      ));
+    });
+  }
+  return context;
 }
 
 function validateFinalGoal(
