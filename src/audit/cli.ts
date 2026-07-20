@@ -27,12 +27,13 @@ export async function runAgreementAuditCli(argv: string[]): Promise<number> {
   }
   if (command === "finalize") {
     const flags = parseFlags(rest, ["input", "candidate", "completeness", "previous-audit", "confirm-extraction", "out"]);
-    const input = parseAgreementAuditInput(readJson(requiredFlag(flags, "input")));
+    const inputFile = path.resolve(requiredFlag(flags, "input"));
     const candidateFile = path.resolve(requiredFlag(flags, "candidate"));
     const completenessFile = flags.get("completeness") ? path.resolve(flags.get("completeness")!) : undefined;
     const ledgers = completenessFile
-      ? readAgreementAuditLedgers(candidateFile, completenessFile)
+      ? readAgreementAuditLedgers(inputFile, candidateFile, completenessFile)
       : undefined;
+    const input = ledgers?.input ?? parseAgreementAuditInput(readJson(inputFile));
     const candidate = ledgers?.candidate ?? parseAgreementAuditCandidate(readJson(candidateFile));
     const completeness = ledgers?.completeness;
     const out = path.resolve(flags.get("out") ?? ".agreement-audit");

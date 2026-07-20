@@ -52,14 +52,6 @@ export function renderAgreementAuditMarkdown(audit: AgreementAudit): string {
     );
   }
 
-  const unresolvedSupporting = audit.agreements.filter((agreement) =>
-    agreement.materiality === "supporting" && agreement.state === "unresolved"
-  );
-  if (unresolvedSupporting.length > 0) {
-    lines.push("## Other uncertainty", "");
-    for (const agreement of unresolvedSupporting) lines.push(...renderSupportingAgreement(agreement, audit));
-  }
-
   lines.push("<details>", "<summary>Final agreement and aligned work</summary>", "");
   if (audit.final_goal) {
     lines.push(`**Final goal:** ${safeMarkdownProse(audit.final_goal.text)}`, "", `Conversation: ${audit.final_goal.conversation_event_ids.map(eventRef).join(", ")}`, "");

@@ -6,6 +6,8 @@ import path from "node:path";
 const testDir = path.resolve("dist/tests");
 const processHeavy = new Set([
   "artifact-provenance-input-hardening.test.js",
+  "agreement-audit-cli.test.js",
+  "agreement-audit-integrated.test.js",
   "bootstrap-handoff-cache.test.js",
   "cli.test.js",
   "cold-start.test.js",

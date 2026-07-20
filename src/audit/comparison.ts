@@ -81,6 +81,7 @@ function decisionIdentity(
 ): string {
   return [
     agreement.kind,
+    agreement.statement,
     agreement.state,
     agreement.materiality,
     ...[...new Set(agreement.conversation_event_ids)].sort(compareStrings)

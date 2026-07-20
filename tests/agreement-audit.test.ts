@@ -266,6 +266,35 @@ test("rerun comparison surfaces a decision whose state or materiality changed", 
   assert.deepEqual(comparison.resolved_decision_keys, ["dependency-boundary"]);
 });
 
+test("rerun comparison surfaces changed decision content for the same event", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "current-decision",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const comparison = compareAgreementAuditDecisions({
+    ...audit,
+    completeness: { ...audit.completeness, verified: true, operator_confirmed: true }
+  }, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [{ ...audit.agreements[0], key: "previous-decision", statement: "The promised test was not run." }]
+  });
+  assert.deepEqual(comparison.unchanged_decision_keys, []);
+  assert.deepEqual(comparison.new_decision_keys, ["current-decision"]);
+  assert.deepEqual(comparison.resolved_decision_keys, ["previous-decision"]);
+});
+
 test("rerun comparison preserves two decisions grounded in the same user turn", () => {
   const input = loadInput("unauthorized-scope");
   const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
@@ -303,6 +332,7 @@ test("previous-audit comparison rejects malformed decision history", () => {
       agreements: [{
         key: "decision",
         kind: "human_instruction",
+        statement: "Implement the requested change.",
         state: "approved",
         materiality: "material",
         conversation_event_ids: ["u1"]
@@ -318,6 +348,7 @@ test("previous-audit comparison rejects malformed decision history", () => {
       agreements: ["first", "second"].map(() => ({
         key: "duplicate-decision",
         kind: "human_instruction",
+        statement: "Implement the requested change.",
         state: "unresolved",
         materiality: "material",
         conversation_event_ids: ["u1"]
@@ -362,6 +393,9 @@ test("the completeness pass receives conversation coverage data without retransm
   assert.doesNotMatch(prompt, /"diff":/);
   assert.doesNotMatch(prompt, /"diff_citations":/);
   assert.doesNotMatch(prompt, /"commands":/);
+  assert.match(prompt, /Mark an event non_material only when it adds no instruction, boundary, commitment, or validation agreement/);
+  assert.match(prompt, /give a concrete reason/);
+  assert.doesNotMatch(prompt, /cannot safely declare.*non_material/);
 });
 
 test("non-material turns become trusted only after an operator confirms the exact ledgers", () => {
@@ -400,6 +434,7 @@ test("non-material turns become trusted only after an operator confirms the exac
   assert.equal(audit.completeness.rejections.length, 0);
 
   const ledgerBytes = {
+    input: `${JSON.stringify(input)}\n`,
     candidate: `${JSON.stringify(candidate)}\n`,
     completeness: `${JSON.stringify(completeness)}\n`
   };
@@ -446,6 +481,9 @@ test("a supporting unresolved human boundary still blocks a clean result", () =>
     limitations: []
   }));
   assert.equal(audit.status, "needs_human_decision");
+  const markdown = renderAgreementAuditMarkdown(audit);
+  assert.equal(markdown.match(/Keeping the written example is unresolved\./g)?.length, 1);
+  assert.doesNotMatch(markdown, /Other uncertainty/);
 });
 
 test("every unresolved agent claim blocks a clean result regardless of materiality", () => {
@@ -634,6 +672,7 @@ test("an independently covered clean extraction can produce a real clean result"
     limitations: []
   });
   const ledgerBytes = {
+    input: `${JSON.stringify(input)}\n`,
     candidate: `${JSON.stringify(candidate)}\n`,
     completeness: `${JSON.stringify(completeness)}\n`
   };

@@ -5,7 +5,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { acquireAgreementAuditRunLock } from "../src/audit/artifacts";
-import { integratedAgreementAuditExitCode, runIntegratedAgreementAudit } from "../src/audit/integrated-run";
+import {
+  buildCollectedAgreementAuditInput,
+  integratedAgreementAuditExitCode,
+  runIntegratedAgreementAudit
+} from "../src/audit/integrated-run";
 import { ExitCodes } from "../src/core/exit-codes";
 import type { CollectionResult } from "../src/collector/collect";
 import type { ReasoningProvider } from "../src/contracts/provider";
@@ -439,6 +443,140 @@ test("integrated agreement audit respects provider privacy boundaries", async ()
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("confirmation reruns reuse equivalent input and regenerate extraction when it changes", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-audit-stale-ledgers-"));
+  try {
+    const outputDir = path.join(root, "audit");
+    fs.mkdirSync(outputDir);
+    let expectedDiffText = "new";
+    const stages: string[] = [];
+    const provider: ReasoningProvider = {
+      name: "agent-file",
+      async generateStructured(stage) {
+        stages.push(stage);
+        if (stage === "agreement-audit") {
+          return {
+            ok: true,
+            data: {
+              final_goal: { text: "Implement the reviewed change.", conversation_event_ids: ["u1"] },
+              agreements: [{
+                key: "change",
+                kind: "human_instruction",
+                statement: "Implement the reviewed change.",
+                state: "fulfilled",
+                materiality: "material",
+                conversation_event_ids: ["u1"],
+                diff_citations: [{ path: "file.ts", side: "add", line: 1, contains: expectedDiffText }],
+                command_ids: []
+              }],
+              complete: true,
+              limitations: []
+            }
+          };
+        }
+        return {
+          ok: true,
+          data: {
+            complete: true,
+            dispositions: [{ event_id: "u1", disposition: "represented", agreement_keys: ["change"] }],
+            missing_agreements: [],
+            limitations: []
+          }
+        };
+      }
+    };
+
+    const initial = await runIntegratedAgreementAudit({
+      collection: minimalAuditCollection(outputDir),
+      provider,
+      explicitConversationScope: "complete"
+    });
+    assert.ok(initial.audit.completeness.confirmation_token);
+    assert.deepEqual(stages, ["agreement-audit", "agreement-completeness"]);
+
+    const inputFile = path.join(outputDir, "agreement-audit-input.json");
+    fs.writeFileSync(inputFile, JSON.stringify(JSON.parse(fs.readFileSync(inputFile, "utf8"))));
+    const reformatted = await runIntegratedAgreementAudit({
+      collection: minimalAuditCollection(outputDir),
+      provider,
+      explicitConversationScope: "complete",
+      extractionConfirmationToken: initial.audit.completeness.confirmation_token
+    });
+    assert.deepEqual(stages, ["agreement-audit", "agreement-completeness"]);
+    assert.equal(reformatted.audit.completeness.operator_confirmed, false);
+    assert.notEqual(
+      reformatted.audit.completeness.confirmation_token,
+      initial.audit.completeness.confirmation_token
+    );
+
+    const changedCollection = minimalAuditCollection(outputDir);
+    changedCollection.manifest.head_sha = "d".repeat(40);
+    changedCollection.reviewedDiff = changedCollection.reviewedDiff!.replace("+new", "+replacement");
+    expectedDiffText = "replacement";
+    const changed = await runIntegratedAgreementAudit({
+      collection: changedCollection,
+      provider,
+      explicitConversationScope: "complete",
+      extractionConfirmationToken: initial.audit.completeness.confirmation_token
+    });
+
+    assert.deepEqual(stages, [
+      "agreement-audit",
+      "agreement-completeness",
+      "agreement-audit",
+      "agreement-completeness"
+    ]);
+    assert.equal(changed.audit.completeness.operator_confirmed, false);
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(outputDir, "agreement-audit-input.json"), "utf8")).head_sha,
+      "d".repeat(40)
+    );
+    assert.equal(
+      JSON.parse(fs.readFileSync(path.join(outputDir, "agreement-audit-candidate.json"), "utf8"))
+        .agreements[0].diff_citations[0].contains,
+      "replacement"
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("collected audit inputs normalize unsafe evidence ids without changing their content", () => {
+  for (const unsafeId of ["user request ~ 1", `ghp_${"a".repeat(36)}`]) {
+    const collection = minimalAuditCollection("unused");
+    collection.conversationSources![0].events[0].id = unsafeId;
+    collection.commandTranscripts.push({
+      id: unsafeId,
+      command: "pnpm test",
+      status: "passed",
+      head_sha: "a".repeat(40),
+      truncated: false,
+      source_path: ".review-surfaces/commands/focused-tests.json"
+    });
+    const input = buildCollectedAgreementAuditInput(collection, "complete");
+    assert.match(input.conversation.events[0].id, /^event-[a-f0-9]{20}$/u);
+    assert.equal(input.conversation.events[0].text, "Implement the reviewed change.");
+    assert.match(input.commands[0].id, /^command-[a-f0-9]{20}$/u);
+    assert.equal(input.commands[0].command, "pnpm test");
+  }
+});
+
+test("incomplete audits redact secret-bearing repository values", async () => {
+  const collection = minimalAuditCollection("unused");
+  collection.git.repo = `https://user:ghp_${"a".repeat(36)}@example.com/repo.git`;
+  collection.conversationSources = [];
+  const provider: ReasoningProvider = {
+    name: "agent-file",
+    async generateStructured() {
+      throw new Error("provider should not run without a conversation");
+    }
+  };
+  const result = await runIntegratedAgreementAudit({ collection, provider });
+  assert.equal(result.audit.status, "cannot_audit");
+  assert.doesNotMatch(result.audit.repository, /ghp_/u);
+  assert.match(result.audit.repository, /\[REDACTED:github_token\]/u);
 });
 
 function minimalAuditCollection(outputDir: string): CollectionResult {

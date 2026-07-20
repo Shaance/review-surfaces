@@ -252,6 +252,6 @@ export type ComparableAgreementAudit = Pick<
 > & {
   agreements: Array<Pick<
     GroundedAgreement,
-    "key" | "kind" | "state" | "materiality" | "conversation_event_ids"
+    "key" | "kind" | "statement" | "state" | "materiality" | "conversation_event_ids"
   >>;
 };

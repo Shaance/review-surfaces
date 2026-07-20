@@ -8,6 +8,7 @@ import {
 import { unique } from "../core/guards";
 
 export interface AgreementAuditLedgerBytes {
+  input: string;
   candidate: string;
   completeness: string;
 }
@@ -17,7 +18,8 @@ export function agreementCompletenessConfirmationToken(
   ledgerBytes: AgreementAuditLedgerBytes
 ): string {
   const hash = crypto.createHash("sha256");
-  updateConfirmationPart(hash, "input", JSON.stringify(input));
+  updateConfirmationPart(hash, "canonical-input", JSON.stringify(input));
+  updateConfirmationPart(hash, "input-artifact", ledgerBytes.input);
   updateConfirmationPart(hash, "candidate", ledgerBytes.candidate);
   updateConfirmationPart(hash, "completeness", ledgerBytes.completeness);
   return hash.digest("hex");

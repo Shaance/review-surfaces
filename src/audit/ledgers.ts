@@ -1,24 +1,37 @@
 import fs from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import type { AgreementAuditLedgerBytes } from "./completeness";
-import type { AgreementAuditCandidate, AgreementCompletenessCandidate } from "./contract";
-import { parseAgreementAuditCandidate, parseAgreementCompletenessCandidate } from "./parse";
+import type { AgreementAuditCandidate, AgreementAuditInput, AgreementCompletenessCandidate } from "./contract";
+import {
+  parseAgreementAuditCandidate,
+  parseAgreementAuditInput,
+  parseAgreementCompletenessCandidate
+} from "./parse";
 
 export interface AgreementAuditLedgers {
+  input: AgreementAuditInput;
   candidate: AgreementAuditCandidate;
   completeness: AgreementCompletenessCandidate;
   bytes: AgreementAuditLedgerBytes;
 }
 
 export function readAgreementAuditLedgers(
+  inputFile: string,
   candidateFile: string,
-  completenessFile: string
-): AgreementAuditLedgers {
+  completenessFile: string,
+  expectedInput?: AgreementAuditInput
+): AgreementAuditLedgers | undefined {
+  const inputBytes = readLedgerBytes(inputFile);
+  const input = parseAgreementAuditInput(JSON.parse(inputBytes) as unknown);
+  if (expectedInput && !isDeepStrictEqual(input, expectedInput)) return undefined;
   const candidateBytes = readLedgerBytes(candidateFile);
   const completenessBytes = readLedgerBytes(completenessFile);
   return {
+    input: expectedInput ?? input,
     candidate: parseAgreementAuditCandidate(JSON.parse(candidateBytes) as unknown),
     completeness: parseAgreementCompletenessCandidate(JSON.parse(completenessBytes) as unknown),
     bytes: {
+      input: inputBytes,
       candidate: candidateBytes,
       completeness: completenessBytes
     }

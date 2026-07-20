@@ -55,7 +55,7 @@ export function buildCompletenessPrompt(
   }
   return [
     "Independently verify whether the proposed agreement extraction covers the supplied conversation.",
-    "Inspect every user, assistant, and agent event. Give each exactly one disposition. Mark an event represented only when a listed atomic agreement cites that exact event and no other auditable event. This untrusted pass cannot safely declare user, assistant, or agent text non_material; report any event missing its own instruction, boundary, commitment, or validation agreement. Do not assess generic code quality and do not trust the candidate's complete flag.",
+    "Inspect every user, assistant, and agent event. Give each exactly one disposition. Mark an event represented only when a listed atomic agreement cites that exact event and no other auditable event. Mark an event non_material only when it adds no instruction, boundary, commitment, or validation agreement; give a concrete reason and never use non_material to hide duplicate or otherwise material content. Report every material event that is missing its own agreement. Do not assess generic code quality and do not trust the candidate's complete flag.",
     "",
     "Return only JSON matching this contract:",
     COMPLETENESS_CONTRACT,

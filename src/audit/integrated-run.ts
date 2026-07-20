@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import path from "node:path";
 import { AGREEMENT_AUDIT_ARTIFACTS } from "../artifacts/agreement-audit";
 import type { CollectionResult } from "../collector/collect";
@@ -32,6 +33,7 @@ import {
   buildCompletenessPrompt
 } from "./prompt";
 import { clearAgreementAuditWorkingArtifacts, writePrivateJson } from "./artifacts";
+import { redactAuditText } from "./presentation-safety";
 
 const AUDIT_ACTORS = new Set(["user", "assistant", "agent", "tool"]);
 
@@ -68,20 +70,9 @@ export async function runIntegratedAgreementAudit(
     throw new Error("--previous-audit head must be an ancestor of the reviewed head");
   }
   let confirmedLedgers: AgreementAuditLedgers | undefined;
-  if (options.extractionConfirmationToken) {
-    try {
-      confirmedLedgers = readAgreementAuditLedgers(
-        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.candidate),
-        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.completeness)
-      );
-    } catch {
-      throw new Error(
-        `--confirm-extraction requires the prior ${AGREEMENT_AUDIT_ARTIFACTS.candidate} and ` +
-        `${AGREEMENT_AUDIT_ARTIFACTS.completeness} artifacts; run audit once and review its ledgers first`
-      );
-    }
+  if (!options.extractionConfirmationToken) {
+    clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
   }
-  if (!confirmedLedgers) clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
   if (!hasAuditableConversation(options.collection)) {
     return {
       audit: incompleteAgreementAudit(
@@ -92,7 +83,29 @@ export async function runIntegratedAgreementAudit(
     };
   }
   const input = buildCollectedAgreementAuditInput(options.collection, options.explicitConversationScope);
-  writePrivateJson(path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.input), input);
+  if (options.extractionConfirmationToken) {
+    try {
+      confirmedLedgers = readAgreementAuditLedgers(
+        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.input),
+        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.candidate),
+        path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.completeness),
+        input
+      );
+    } catch {
+      throw new Error(
+        `--confirm-extraction requires the prior ${AGREEMENT_AUDIT_ARTIFACTS.input}, ` +
+        `${AGREEMENT_AUDIT_ARTIFACTS.candidate}, and ${AGREEMENT_AUDIT_ARTIFACTS.completeness} artifacts; ` +
+        "run audit once and review its ledgers first"
+      );
+    }
+  }
+  if (options.extractionConfirmationToken && !confirmedLedgers) {
+    clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
+  }
+  let inputBytes: string | undefined;
+  if (!confirmedLedgers) {
+    inputBytes = writePrivateJson(path.join(options.collection.outputDir, AGREEMENT_AUDIT_ARTIFACTS.input), input);
+  }
 
   let candidate: AgreementAuditCandidate;
   let candidateBytes: string | undefined;
@@ -154,7 +167,8 @@ export async function runIntegratedAgreementAudit(
   }
 
   const confirmationLedgerBytes = confirmedLedgers?.bytes ??
-    (candidateBytes && completenessBytes ? {
+    (inputBytes && candidateBytes && completenessBytes ? {
+      input: inputBytes,
       candidate: candidateBytes,
       completeness: completenessBytes
     } : undefined);
@@ -243,7 +257,7 @@ function incompleteAgreementAudit(
     : input?.conversation.status ?? options.explicitConversationScope ?? "partial";
   const audit: AgreementAudit = {
     version: AGREEMENT_AUDIT_RESULT_VERSION,
-    repository: input?.repository ?? options.collection.git.repo,
+    repository: redactAuditText(input?.repository ?? options.collection.git.repo).text,
     base_sha: baseSha,
     head_sha: headSha,
     status: "cannot_audit",
@@ -326,7 +340,7 @@ export function buildCollectedAgreementAuditInput(
     },
     diff,
     commands: collection.commandTranscripts.map((command) => ({
-      id: command.id,
+      id: normalizedAuditId("command", "", command.id),
       command: command.command,
       status: command.status,
       ...(command.head_sha ? { head_sha: command.head_sha } : {})
@@ -339,7 +353,7 @@ function mapConversationEvents(collection: CollectionResult): AuditConversationE
     .filter(isAuditableConversationEvent)
     .map((event) => ({ source, event })))
     .map(({ source, event }, order) => ({
-      id: event.id,
+      id: normalizedAuditId("event", source.id, event.id),
       source_id: source.id,
       actor: normalizeActor(event.actor),
       kind: event.kind,
@@ -382,4 +396,10 @@ function normalizeActor(actor: string): AuditConversationEvent["actor"] {
   const normalized = actor.toLowerCase();
   if (normalized === "user" || normalized === "assistant" || normalized === "agent") return normalized;
   return "tool";
+}
+
+function normalizedAuditId(prefix: "command" | "event", scope: string, id: string): string {
+  if (/^[A-Za-z0-9._:-]+$/u.test(id) && !id.includes("..") && !redactAuditText(id).redacted) return id;
+  const digest = crypto.createHash("sha256").update(`${scope}\0${id}`).digest("hex").slice(0, 20);
+  return `${prefix}-${digest}`;
 }

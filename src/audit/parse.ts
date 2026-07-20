@@ -118,6 +118,7 @@ export function parseComparableAgreementAudit(value: unknown): ComparableAgreeme
       return {
         key: safeId(agreement.key, `previous audit.agreements[${index}].key`),
         kind: enumValue(agreement.kind, AGREEMENT_KINDS, `previous audit.agreements[${index}].kind`),
+        statement: nonEmpty(agreement.statement, `previous audit.agreements[${index}].statement`),
         state: enumValue(agreement.state, AGREEMENT_STATES, `previous audit.agreements[${index}].state`),
         materiality: enumValue(
           agreement.materiality,
