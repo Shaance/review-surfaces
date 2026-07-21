@@ -100,7 +100,10 @@ export async function runIntegratedAgreementAudit(
     }
   }
   if (options.extractionConfirmationToken && !confirmedLedgers) {
-    clearAgreementAuditWorkingArtifacts(options.collection.outputDir);
+    throw new Error(
+      "--confirm-extraction no longer matches the collected input; the reviewed ledgers were preserved, " +
+      "so rerun without confirmation to generate a fresh snapshot"
+    );
   }
   let inputBytes: string | undefined;
   if (!confirmedLedgers) {
@@ -245,7 +248,9 @@ async function generateAgreementCandidate(
 
 function hasAuditableConversation(collection: CollectionResult): boolean {
   return collectedConversationSources(collection).some((source) =>
-    source.events.some(isAuditableConversationEvent)
+    source.events.some((event) =>
+      event.actor.toLowerCase() === "user" && isAuditableConversationEvent(event)
+    )
   );
 }
 

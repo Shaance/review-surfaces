@@ -443,6 +443,25 @@ test("non-material turns become trusted only after an operator confirms the exac
   assert.equal(confirmed.status, "no_mismatch_found");
   assert.equal(confirmed.completeness.verified, true);
   assert.equal(confirmed.completeness.operator_confirmed, true);
+  const limitedCandidate = {
+    ...candidate,
+    limitations: ["The supplied evidence was truncated."]
+  };
+  const limitedLedgerBytes = {
+    ...ledgerBytes,
+    candidate: `${JSON.stringify(limitedCandidate)}\n`
+  };
+  const limitedToken = agreementCompletenessConfirmationToken(input, limitedLedgerBytes);
+  const limited = groundAgreementAudit(
+    input,
+    limitedCandidate,
+    completeness,
+    limitedToken,
+    limitedLedgerBytes
+  );
+  assert.equal(limited.status, "cannot_audit");
+  assert.equal(limited.completeness.verified, true);
+  assert.ok(limited.limitations.includes("The supplied evidence was truncated."));
   const tampered = groundAgreementAudit(input, candidate, completeness, token, {
     ...ledgerBytes,
     candidate: `${ledgerBytes.candidate} `

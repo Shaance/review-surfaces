@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AGREEMENT_AUDIT_WORKING_ARTIFACTS } from "../src/artifacts/agreement-audit";
 import { acquireAgreementAuditRunLock } from "../src/audit/artifacts";
 import {
   buildCollectedAgreementAuditInput,
@@ -450,12 +451,12 @@ test("integrated agreement audit respects provider privacy boundaries", async ()
   }
 });
 
-test("confirmation reruns reuse equivalent input and regenerate extraction when it changes", async () => {
+test("confirmation reruns reuse equivalent input and preserve reviewed ledgers when it changes", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agreement-audit-stale-ledgers-"));
   try {
     const outputDir = path.join(root, "audit");
     fs.mkdirSync(outputDir);
-    let expectedDiffText = "new";
+    const expectedDiffText = "new";
     const stages: string[] = [];
     const provider: ReasoningProvider = {
       name: "agent-file",
@@ -516,33 +517,44 @@ test("confirmation reruns reuse equivalent input and regenerate extraction when 
       initial.audit.completeness.confirmation_token
     );
 
+    const reviewedArtifacts = AGREEMENT_AUDIT_WORKING_ARTIFACTS.map(
+      (name) => [name, fs.readFileSync(path.join(outputDir, name), "utf8")] as const
+    );
+    const appendedCollection = minimalAuditCollection(outputDir);
+    appendedCollection.conversationSources![0].events.push({
+      id: "u2",
+      actor: "user",
+      kind: "message",
+      summary: "Confirm the reviewed extraction.",
+      raw_index: 1
+    });
+    await assert.rejects(
+      runIntegratedAgreementAudit({
+        collection: appendedCollection,
+        provider,
+        explicitConversationScope: "complete",
+        extractionConfirmationToken: initial.audit.completeness.confirmation_token
+      }),
+      /no longer matches the collected input/
+    );
+
     const changedCollection = minimalAuditCollection(outputDir);
     changedCollection.manifest.head_sha = "d".repeat(40);
     changedCollection.reviewedDiff = changedCollection.reviewedDiff!.replace("+new", "+replacement");
-    expectedDiffText = "replacement";
-    const changed = await runIntegratedAgreementAudit({
-      collection: changedCollection,
-      provider,
-      explicitConversationScope: "complete",
-      extractionConfirmationToken: initial.audit.completeness.confirmation_token
-    });
+    await assert.rejects(
+      runIntegratedAgreementAudit({
+        collection: changedCollection,
+        provider,
+        explicitConversationScope: "complete",
+        extractionConfirmationToken: initial.audit.completeness.confirmation_token
+      }),
+      /no longer matches the collected input/
+    );
 
-    assert.deepEqual(stages, [
-      "agreement-audit",
-      "agreement-completeness",
-      "agreement-audit",
-      "agreement-completeness"
-    ]);
-    assert.equal(changed.audit.completeness.operator_confirmed, false);
-    assert.equal(
-      JSON.parse(fs.readFileSync(path.join(outputDir, "agreement-audit-input.json"), "utf8")).head_sha,
-      "d".repeat(40)
-    );
-    assert.equal(
-      JSON.parse(fs.readFileSync(path.join(outputDir, "agreement-audit-candidate.json"), "utf8"))
-        .agreements[0].diff_citations[0].contains,
-      "replacement"
-    );
+    assert.deepEqual(stages, ["agreement-audit", "agreement-completeness"]);
+    for (const [name, bytes] of reviewedArtifacts) {
+      assert.equal(fs.readFileSync(path.join(outputDir, name), "utf8"), bytes);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -582,6 +594,28 @@ test("incomplete audits redact secret-bearing repository values", async () => {
   assert.equal(result.audit.status, "cannot_audit");
   assert.doesNotMatch(result.audit.repository, /ghp_/u);
   assert.match(result.audit.repository, /\[REDACTED:github_token\]/u);
+});
+
+test("tool-only conversations stop before extraction", async () => {
+  const collection = minimalAuditCollection("unused");
+  collection.conversationSources![0].events = [{
+    id: "t1",
+    actor: "tool",
+    kind: "tool_result",
+    summary: "Command completed.",
+    raw_index: 0
+  }];
+  const provider: ReasoningProvider = {
+    name: "ai-sdk",
+    async generateStructured() {
+      throw new Error("provider should not run without a user turn");
+    }
+  };
+
+  const result = await runIntegratedAgreementAudit({ collection, provider });
+
+  assert.equal(result.audit.status, "cannot_audit");
+  assert.ok(result.audit.limitations.some((limitation) => /No auditable conversation was collected/.test(limitation)));
 });
 
 function minimalAuditCollection(outputDir: string): CollectionResult {

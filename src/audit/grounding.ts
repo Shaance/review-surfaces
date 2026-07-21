@@ -149,7 +149,7 @@ export function groundAgreementAudit(
       ? "cannot_audit"
       : needsDecision
         ? "needs_human_decision"
-        : extractionCompletenessVerified
+        : extractionCompletenessVerified && rawLimitations.length === 0
           ? "no_mismatch_found"
           : "cannot_audit",
     candidate_complete: candidate.complete,
