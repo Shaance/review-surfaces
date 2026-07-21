@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "case_id": "clean-timeout-validation",
+  "source": "synthetic",
+  "clean": true,
+  "agreements": [
+    { "id": "configurable-timeout", "kind": "human_instruction", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["u1"], "expected_diff_coordinates": [{ "path": "src/worker.ts", "side": "add", "line": 14 }, { "path": "tests/worker.test.ts", "side": "add", "line": 38 }], "expected_command_ids": [] },
+    { "id": "timeout-commitment", "kind": "agent_commitment", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["a1"], "expected_diff_coordinates": [{ "path": "src/worker.ts", "side": "add", "line": 14 }, { "path": "tests/worker.test.ts", "side": "add", "line": 38 }], "expected_command_ids": [] },
+    { "id": "focused-tests", "kind": "validation_claim", "materiality": "material", "expected_state": "fulfilled", "governing_event_ids": ["a2"], "expected_diff_coordinates": [], "expected_command_ids": ["worker-tests"] }
+  ]
+}

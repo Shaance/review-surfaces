@@ -76,12 +76,17 @@ export interface AgreementBenchmarkComparison {
   blinded_product_preferences: number;
   blinded_baseline_preferences: number;
   blinded_ties: number;
+  /** Recorded fields satisfy the declared comparison rules; this is not proof they are authentic. */
+  recorded_requirements_met: boolean;
+  /** Always false until raw runs and authenticated reviewer records are verified. */
+  evidence_trusted: false;
   passes: boolean;
   failures: string[];
 }
 
 export function compareAgreementBenchmarkRuns(input: {
   required_case_ids: string[];
+  expected_case_hashes?: Array<{ id: string; input_sha256: string; gold_sha256: string }>;
   baseline: AgreementBenchmarkScore[];
   product: AgreementBenchmarkScore[];
   preferences: AgreementBenchmarkPreference[];
@@ -94,6 +99,10 @@ export function compareAgreementBenchmarkRuns(input: {
   const productMacro = macroByCase(product);
   const delta = productMacro - baselineMacro;
   const requiredCaseIds = benchmarkCaseIdSet(input.required_case_ids, failures);
+  const expectedHashes = new Map((input.expected_case_hashes ?? []).map((entry) => [entry.id, entry]));
+  if (input.expected_case_hashes && expectedHashes.size !== input.expected_case_hashes.length) {
+    failures.push("expected benchmark case hashes must use unique case ids");
+  }
   const baselineCaseIds = new Set(baseline.map((score) => score.case_id));
   const productCaseIds = new Set(product.map((score) => score.case_id));
   if (!sameSet(requiredCaseIds, baselineCaseIds) || !sameSet(requiredCaseIds, productCaseIds)) {
@@ -129,6 +138,14 @@ export function compareAgreementBenchmarkRuns(input: {
     }
     if (new Set([...baselineRuns, ...productRuns].map((run) => run.gold_sha256)).size > 1) {
       failures.push(`${caseId} must use one frozen gold ledger across all runs`);
+    }
+    const expected = expectedHashes.get(caseId);
+    if (input.expected_case_hashes && !expected) {
+      failures.push(`${caseId} is missing expected manifest hashes`);
+    } else if (expected && [...baselineRuns, ...productRuns].some((run) =>
+      run.input_hash !== expected.input_sha256 || run.gold_sha256 !== expected.gold_sha256
+    )) {
+      failures.push(`${caseId} run hashes do not match the frozen manifest`);
     }
     for (const [pairId, baseline] of baselineByPair) {
       const product = productByPair.get(pairId);
@@ -185,9 +202,29 @@ export function compareAgreementBenchmarkRuns(input: {
     blinded_product_preferences: productPreferences,
     blinded_baseline_preferences: baselinePreferences,
     blinded_ties: ties,
-    passes: failures.length === 0,
+    recorded_requirements_met: failures.length === 0,
+    evidence_trusted: false,
+    passes: false,
     failures
   };
+}
+
+export function compareRecordedAgreementBenchmark(
+  value: unknown,
+  manifest: AgreementBenchmarkManifest
+): AgreementBenchmarkComparison {
+  const record = asRecord(value, "benchmark comparison");
+  return compareAgreementBenchmarkRuns({
+    required_case_ids: manifest.cases.map((entry) => entry.id),
+    expected_case_hashes: manifest.cases.map((entry) => ({
+      id: entry.id,
+      input_sha256: entry.input_sha256,
+      gold_sha256: entry.gold_sha256
+    })),
+    baseline: record.baseline as AgreementBenchmarkScore[],
+    product: record.product as AgreementBenchmarkScore[],
+    preferences: record.preferences as AgreementBenchmarkPreference[]
+  });
 }
 
 export function parseAgreementBenchmarkManifest(value: unknown): AgreementBenchmarkManifest {
@@ -308,7 +345,8 @@ export function parseAgreementBenchmarkGold(value: unknown, input: AgreementAudi
   }
   if (!gold.clean && !agreements.some((agreement) => agreementNeedsHumanDecision({
     state: agreement.expected_state,
-    materiality: agreement.materiality
+    materiality: agreement.materiality,
+    kind: agreement.kind
   }))) {
     throw new Error("a non-clean benchmark case needs an auditable decision");
   }

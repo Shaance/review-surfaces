@@ -42,9 +42,30 @@ test("agreement benchmark freezes six paired cases and keeps gold out of both pr
     assert.ok(!baseline.includes('"case_id"'));
     assert.ok(!product.includes('"case_id"'));
     assert.match(product, /failed exact-head command contradicts a claimed pass/);
-    assert.match(product, /every diverged agreement and every material unresolved agreement/);
+    assert.match(product, /every diverged or unresolved agreement/);
     assert.doesNotMatch(product, /string \| undefined/);
   }
+});
+
+test("frozen holdout is content-addressed and valid but does not claim a passing comparison", () => {
+  const root = path.join(BENCH_ROOT, "holdout");
+  const manifest = parseAgreementBenchmarkManifest(readJson(path.join(root, "manifest.json")));
+  assert.equal(manifest.cases.length, 3);
+  for (const entry of manifest.cases) {
+    assert.equal(fileDigest(path.join(root, entry.input)), entry.input_sha256);
+    assert.equal(fileDigest(path.join(root, entry.gold)), entry.gold_sha256);
+    const input = parseAgreementAuditInput(readJson(path.join(root, entry.input)));
+    const gold = parseAgreementBenchmarkGold(readJson(path.join(root, entry.gold)), input);
+    assert.equal(gold.case_id, entry.id);
+  }
+  const unevaluated = compareAgreementBenchmarkRuns({
+    required_case_ids: manifest.cases.map((entry) => entry.id),
+    baseline: [],
+    product: [],
+    preferences: []
+  });
+  assert.equal(unevaluated.passes, false);
+  assert.ok(unevaluated.failures.some((failure) => /manifest case set|exactly three runs/.test(failure)));
 });
 
 test("agreement benchmark includes a case larger than the legacy eight-item cap", () => {
@@ -125,7 +146,7 @@ test("benchmark manifest paths cannot escape the benchmark root", () => {
   assert.throws(() => parseAgreementBenchmarkManifest(manifest("C:\\private.json")), /stay within the benchmark root/);
 });
 
-test("adjudicated benchmark score is independent of candidate wording and enforces release gates", () => {
+test("adjudicated benchmark score is independent of candidate wording and checks recorded thresholds", () => {
   const input = loadInput("late-correction");
   const candidate: AgreementAuditCandidate = {
     final_goal: { text: "Remove Swift analysis but retain the privacy boundary.", conversation_event_ids: ["u1", "u2"] },
@@ -237,7 +258,23 @@ test("adjudicated benchmark score is independent of candidate wording and enforc
   const comparison = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"], baseline, product, preferences
   });
-  assert.equal(comparison.passes, true);
+  assert.equal(comparison.recorded_requirements_met, true);
+  assert.equal(comparison.evidence_trusted, false);
+  assert.equal(comparison.passes, false);
+
+  const manifestMismatch = compareAgreementBenchmarkRuns({
+    required_case_ids: ["late-correction"],
+    expected_case_hashes: [{
+      id: "late-correction",
+      input_sha256: "f".repeat(64),
+      gold_sha256: "e".repeat(64)
+    }],
+    baseline,
+    product,
+    preferences
+  });
+  assert.equal(manifestMismatch.recorded_requirements_met, false);
+  assert.ok(manifestMismatch.failures.some((failure) => /do not match the frozen manifest/.test(failure)));
 
   const failedBaseline = compareAgreementBenchmarkRuns({
     required_case_ids: ["late-correction"],

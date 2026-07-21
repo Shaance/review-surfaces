@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { collectInputs } from "../src/collector/collect";
 import { collectChangedFiles } from "../src/collector/git";
@@ -435,6 +436,10 @@ test("review-surfaces.METHODOLOGY.6 collect.ts produces conversationEvents that 
   // label are on the CollectionResult, and the normalized log was persisted.
   assert.ok(result.conversationEvents && result.conversationEvents.length > 0);
   assert.equal(result.conversationSource, "claude-code");
+  assert.equal(
+    result.conversationSourceHash,
+    crypto.createHash("sha256").update(fs.readFileSync(path.join(tmp, "session.jsonl"))).digest("hex")
+  );
   assert.ok(result.diagnostics.some((line) => line.startsWith("Conversation adapter: claude-code")));
   assert.ok(fs.existsSync(path.join(tmp, ".review-surfaces", "inputs", "conversation.normalized.jsonl")));
   // A redacted tool_result secret never reaches the in-memory stream verbatim.
@@ -445,6 +450,127 @@ test("review-surfaces.METHODOLOGY.6 collect.ts produces conversationEvents that 
   const methodology = await buildMethodology(tmp, result, "session.jsonl", []);
   assert.equal(methodology.missing_logs, false);
   assert.match(methodology.summary, new RegExp(`extracted ${result.conversationEvents.length} event`));
+});
+
+test("additional-only conversation format and bytes are part of the collection signature", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-additional-conv-"));
+  fs.writeFileSync(path.join(tmp, "later.jsonl"), `${JSON.stringify({
+    id: "u1",
+    actor: "user",
+    kind: "message",
+    summary: "Keep the final boundary."
+  })}\n`);
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+
+  const result = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationDiscovery: false,
+    additionalConversationPaths: ["later.jsonl"],
+    conversationFormat: "normalized"
+  });
+
+  assert.equal(result.conversationSources?.[0].id, "conversation-2");
+  assert.equal(result.conversationSources?.[0].adapter, "normalized");
+  assert.ok(result.manifest.signature);
+
+  const forcedCodex = await collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationDiscovery: false,
+    additionalConversationPaths: ["later.jsonl"],
+    conversationFormat: "codex"
+  });
+  assert.equal(forcedCodex.conversationSources?.[0].adapter, "codex");
+  assert.notEqual(forcedCodex.manifest.signature, result.manifest.signature);
+});
+
+test("an unreadable additional conversation fails before collection writes artifacts", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-additional-preflight-"));
+  await assert.rejects(() => collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationDiscovery: false,
+    additionalConversationPaths: ["missing.jsonl"]
+  }), /additional conversation 1 was unreadable or unmatched/);
+  assert.equal(fs.existsSync(path.join(tmp, ".review-surfaces")), false);
+});
+
+test("strict evidence collection rejects a worktree mutation during collection", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-snapshot-race-"));
+  fs.writeFileSync(path.join(tmp, "tracked.ts"), "export const value = 1;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "snapshot@example.com"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Snapshot Test"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "tracked.ts"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+
+  await assert.rejects(() => collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationDiscovery: false,
+    strictEvidenceSnapshot: true,
+    beforeEvidenceSnapshotValidation: () => {
+      fs.writeFileSync(path.join(tmp, "tracked.ts"), "export const value = 2;\n");
+    }
+  }), /repository changed while agreement-audit evidence was being collected/);
+});
+
+test("strict evidence collection rejects an initially dirty worktree before snapshot validation", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-dirty-snapshot-"));
+  fs.writeFileSync(path.join(tmp, "tracked.ts"), "export const value = 1;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "snapshot@example.com"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Snapshot Test"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "tracked.ts"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+  fs.writeFileSync(path.join(tmp, "tracked.ts"), "export const value = 2;\n");
+  let validated = false;
+
+  await assert.rejects(() => collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationDiscovery: false,
+    strictEvidenceSnapshot: true,
+    beforeEvidenceSnapshotValidation: () => { validated = true; }
+  }), /requires a clean working tree/);
+  assert.equal(validated, false);
+});
+
+test("strict evidence collection fails closed when Git cannot report worktree status", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "review-surfaces-status-failure-"));
+  fs.writeFileSync(path.join(tmp, "tracked.ts"), "export const value = 1;\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "snapshot@example.com"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Snapshot Test"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["add", "tracked.ts"], { cwd: tmp, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "base"], { cwd: tmp, stdio: "ignore" });
+  fs.writeFileSync(path.join(tmp, ".git", "index"), "not a git index");
+
+  await assert.rejects(() => collectInputs({
+    cwd: tmp,
+    config: { ...defaultConfig, specs: [], docs: [], tests: [], output_dir: ".review-surfaces" },
+    baseRef: "HEAD",
+    headRef: "HEAD",
+    dogfood: false,
+    conversationDiscovery: false,
+    strictEvidenceSnapshot: true
+  }), /could not verify working-tree status/);
 });
 
 test("review-surfaces.PRIVACY.7 a conversation tool_result secret folds into remote_provider_blocked AND secret_findings", async () => {

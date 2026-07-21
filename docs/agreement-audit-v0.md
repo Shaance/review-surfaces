@@ -26,10 +26,16 @@ states the divergence or unresolved agreement, the decision required, and the
 exact evidence. The final goal, fulfilled agreements, provenance, and limitations
 are supporting detail.
 
-Milestone one does not emit a clean conclusion from one model's `complete=true`
-claim. If it finds no decision, it says extraction completeness was not
-independently verified and remains inconclusive. A later independent completeness
-verifier may unlock the deliberately narrow clean message:
+The audit does not emit a clean conclusion from one model's `complete=true`
+claim. A separate completeness pass must give every eligible user, assistant,
+and agent event exactly one disposition; each represented event must point to
+its own atomic agreement. The deterministic validator rejects duplicate,
+missing, broad, or unsupported dispositions. Because both ledgers remain
+model-generated, structural validation alone cannot certify clause-level
+completeness. The operator must review them and supply the content-bound
+confirmation token from `audit.json`; if regeneration changes any input or ledger
+byte, the token no longer matches. Only then may the audit unlock the deliberately
+narrow clean message:
 
 > No conversation-grounded mismatch was found for `<head>`. Code correctness was
 > not assessed.
@@ -42,7 +48,39 @@ material agreement proposed by the agent and accepted by grounding. Transport
 limits must produce continuation plus an explicit incomplete state; they may not
 silently hide decisions.
 
-## Milestone-one vertical slice
+## Default integrated journey
+
+The public command derives the exact evidence rather than accepting a prepared
+input object:
+
+```text
+Git merge-base/head + snapshotted conversation + command transcripts
+  -> normalized, content-addressed audit input
+  -> schema-bound agreement extraction
+  -> separate completeness pass
+  -> deterministic citation, scope, and completeness grounding
+  -> adaptive Markdown and JSON agreement audit
+```
+
+```bash
+review-surfaces audit --base origin/main
+```
+
+Every selected transcript set is treated as partial unless the operator passes
+`--conversation-scope complete`. High-confidence auto-discovery can identify a
+likely producing session, but does not prove that no other governing session
+exists. The completeness assertion is recorded as a caveat in the result. A
+working-tree diff is refused because immutable exact-line links require a
+committed or explicitly pinned head.
+
+The first structurally complete run remains protective and prints a confirmation
+token. After reviewing `agreement-audit-candidate.json` and
+`agreement-audit-completeness.json`, rerun with
+`--confirm-extraction <token>`. This deliberate second step is the minimum safe
+friction needed to prevent two model passes from jointly omitting a clause. The
+confirmation path reuses the reviewed saved ledgers rather than regenerating them.
+
+## Advanced manual recovery
 
 Build the isolated spine:
 
@@ -62,12 +100,21 @@ node bin/agreement-audit.js prompt \
   --mode review-surfaces
 ```
 
-After an agent writes the candidate JSON, validate and render it:
+After an agent writes the candidate JSON, generate a separate completeness prompt:
+
+```bash
+node bin/agreement-audit.js completeness-prompt \
+  --input bench/agreement/cases/late-correction.input.json \
+  --candidate /path/to/candidate.json
+```
+
+Then validate and render both outputs:
 
 ```bash
 node bin/agreement-audit.js finalize \
   --input bench/agreement/cases/late-correction.input.json \
   --candidate /path/to/candidate.json \
+  --completeness /path/to/completeness.json \
   --out .agreement-audit
 ```
 
@@ -89,8 +136,9 @@ The gold ledger is loaded only by the evaluator. It is not included in either
 candidate prompt. Candidate-to-gold semantic matches require blinded adjudication;
 exact citation validation remains automatic.
 
-The harness requires both arms to use the same model, input, output contract,
-context/output budget, and three runs per case. Its release gate requires:
+The comparison protocol requires both arms to use the same model, input, output
+contract, context/output budget, and three runs per case. The intended product
+evidence thresholds are:
 
 - valid exact citations for every material conclusion;
 - no false mismatch on the clean case;
@@ -104,20 +152,18 @@ the exact candidate output, and records generation and reviewer-decision time.
 At least two thirds of all paired judgments must prefer the product in addition
 to the 2:1 preference gate.
 
-Because this first calibration set and prompt are introduced together, these six
-cases cannot alone prove generalization. This milestone is score-only and is not
-an executable release gate. Before live gating or a superiority claim, milestone
-two must add the independent completeness verifier and a separate holdout
-manifest frozen and landed before any prompt changes or live runs. Later fixture
-or gold changes require a new benchmark version; prior versions remain immutable.
+Because the first calibration set and prompt were introduced together, those six
+cases cannot alone prove generalization. `bench/agreement/holdout/manifest.json`
+now freezes a separate three-case holdout before any live comparison. The
+`benchmark-check` command checks recorded bundles for exactly three matched runs
+per arm per case, frozen manifest hashes, and output-bound blinded preference
+judgments. It is not a release gate: scores and reviewer records are supplied by
+the caller, so its output explicitly remains untrusted and can never claim a
+pass. A future release gate must recompute results from provenance-bound raw
+outputs and authenticate reviewer records.
+Later fixture or gold changes require a new benchmark version; prior versions
+remain immutable.
 
-This milestone establishes the harness and the validation half of the trust
-contract. It does **not** independently derive the diff, head, command, or
-transcript hashes from Git and conversation storage. The CLI's `finalize` command
-therefore labels its evidence as supplied JSON. Trusted collection is milestone
-two, and no exact-head provenance claim is warranted before it ships.
-
-This milestone also does **not** claim that the product has beaten the baseline
-until the matched live runs and blinded judgments are recorded. Adaptive
-provider-context chunking is deferred with provider integration; truncation may
-never be represented as a complete audit.
+The repository still does **not** claim that the product has beaten the baseline
+until matched live runs and blinded judgments are recorded. Provider truncation
+may never be represented as a complete audit.

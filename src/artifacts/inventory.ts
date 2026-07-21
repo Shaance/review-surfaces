@@ -1,3 +1,5 @@
+import { AGREEMENT_AUDIT_ARTIFACT_NAMES } from "./agreement-audit";
+
 // Top-level files emitted by review-surfaces, plus deprecated names retained for
 // self-input exclusion. Keep collection exclusion and conversation-payload
 // detection on the same inventory so a current or stale generated artifact cannot
@@ -29,7 +31,8 @@ export const REVIEW_SURFACES_ROOT_ARTIFACT_FILES = new Set([
   "review.sarif",
   "pending_review.json",
   "pr_review_surface.json",
-  "eval_scoreboard.json"
+  "eval_scoreboard.json",
+  ...AGREEMENT_AUDIT_ARTIFACT_NAMES
 ]);
 
 const REVIEW_SURFACES_ARTIFACT_NAME_PATTERN = new RegExp(

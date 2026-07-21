@@ -62,17 +62,18 @@ test("review-surfaces.DISTRIBUTION.2 internal process docs live under docs/histo
 test("review-surfaces.DISTRIBUTION.3 README is written for a stranger's first five minutes", () => {
   const readme = read("README.md");
 
-  // Leads with the adaptive decision brief, before anything Acai-shaped.
+  // Leads with the agreement-audit thesis and safe default journey, before any
+  // legacy packet-compiler or Acai material.
   const firstScreen = readme.slice(0, 1500);
-  assert.match(firstScreen, /What is the author trying to change/i);
-  assert.match(firstScreen, /Which independent decisions could change approval/i);
-  assert.match(firstScreen, /What evidence supports each decision/i);
-  assert.match(firstScreen, /There is no universal word\s+or item cap/i);
+  assert.match(firstScreen, /did this exact change match the final agreement/i);
+  assert.match(firstScreen, /review-surfaces audit/);
+  assert.match(firstScreen, /does not fall back to generic review noise/i);
+  assert.match(readme, /number of decisions follows the evidence rather than an item cap/i);
   assert.doesNotMatch(firstScreen, /Did the agent overreach|Did it weaken tests|Did it claim things it didn't do/i);
 
   // An npx quickstart that works on a spec-less repo (no --spec flag in it).
-  const quickstart = readme.slice(readme.indexOf("## Quickstart"), readme.indexOf("## What you get"));
-  assert.match(quickstart, /npx review-surfaces all/);
+  const quickstart = readme.slice(readme.indexOf("## Quickstart"), readme.indexOf("## What the result means"));
+  assert.match(quickstart, /npx review-surfaces audit/);
   assert.ok(!quickstart.includes("--spec"), "the quickstart must not require a spec");
 
   // A real packet is available before install; stale screenshots are not used as

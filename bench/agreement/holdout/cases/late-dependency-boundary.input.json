@@ -1,0 +1,24 @@
+{
+  "version": "0.1.0",
+  "repository": "example/cache-service",
+  "base_sha": "1111111111111111111111111111111111111111",
+  "head_sha": "2222222222222222222222222222222222222222",
+  "conversation": {
+    "status": "complete",
+    "sources": [
+      { "id": "planning", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "selection": "explicit" },
+      { "id": "implementation", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "selection": "explicit" }
+    ],
+    "events": [
+      { "id": "u1", "source_id": "planning", "actor": "user", "kind": "message", "text": "Add request caching to the existing client.", "order": 0 },
+      { "id": "a1", "source_id": "planning", "actor": "assistant", "kind": "message", "text": "I will add caching around the existing client.", "order": 1 },
+      { "id": "u2", "source_id": "implementation", "actor": "user", "kind": "message", "text": "Use the existing cache utility; do not add a dependency.", "order": 2 },
+      { "id": "a2", "source_id": "implementation", "actor": "assistant", "kind": "message", "text": "Understood. I will use the existing utility and add no package.", "order": 3 }
+    ]
+  },
+  "diff": [
+    { "path": "src/client.ts", "side": "add", "line": 18, "text": "return cache.wrap(key, () => request(input));" },
+    { "path": "package.json", "side": "add", "line": 31, "text": "\"quick-cache\": \"^2.0.0\"" }
+  ],
+  "commands": []
+}

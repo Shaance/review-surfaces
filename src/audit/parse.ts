@@ -2,8 +2,10 @@ import {
   AGREEMENT_KINDS,
   AGREEMENT_MATERIALITIES,
   AGREEMENT_STATES,
-  AGREEMENT_AUDIT_VERSION,
+  AGREEMENT_AUDIT_INPUT_VERSION,
+  AGREEMENT_AUDIT_RESULT_VERSION,
   COMMAND_STATUSES,
+  COMPLETENESS_DISPOSITIONS,
   CONVERSATION_ACTORS,
   CONVERSATION_SCOPE_STATUSES,
   CONVERSATION_SOURCE_SELECTIONS,
@@ -11,6 +13,8 @@ import {
   auditDiffCoordinate,
   type AgreementAuditCandidate,
   type AgreementAuditInput,
+  type AgreementCompletenessCandidate,
+  type ComparableAgreementAudit,
   type AgreementCandidate,
   type AuditCommandEvidence,
   type AuditConversationEvent,
@@ -24,7 +28,9 @@ import { repositoryPath } from "./path";
 export function parseAgreementAuditInput(value: unknown): AgreementAuditInput {
   const input = record(value, "input");
   const version = string(input.version, "input.version");
-  if (version !== AGREEMENT_AUDIT_VERSION) throw new Error(`input.version must be ${AGREEMENT_AUDIT_VERSION}`);
+  if (version !== AGREEMENT_AUDIT_INPUT_VERSION) {
+    throw new Error(`input.version must be ${AGREEMENT_AUDIT_INPUT_VERSION}`);
+  }
   const conversation = record(input.conversation, "input.conversation");
   const sources = array(conversation.sources, "input.conversation.sources").map(parseSource);
   const sourceIds = uniqueIds(sources, "conversation source");
@@ -46,7 +52,7 @@ export function parseAgreementAuditInput(value: unknown): AgreementAuditInput {
     return line;
   });
   return {
-    version: AGREEMENT_AUDIT_VERSION,
+    version: AGREEMENT_AUDIT_INPUT_VERSION,
     repository: nonEmpty(input.repository, "input.repository"),
     base_sha: commitSha(input.base_sha, "input.base_sha"),
     head_sha: commitSha(input.head_sha, "input.head_sha"),
@@ -72,6 +78,65 @@ export function parseAgreementAuditCandidate(value: unknown): AgreementAuditCand
     agreements: array(candidate.agreements, "candidate.agreements").map(parseAgreement),
     complete: boolean(candidate.complete, "candidate.complete"),
     limitations: stringArray(candidate.limitations, "candidate.limitations")
+  };
+}
+
+export function parseAgreementCompletenessCandidate(value: unknown): AgreementCompletenessCandidate {
+  const coverage = record(value, "completeness");
+  return {
+    complete: boolean(coverage.complete, "completeness.complete"),
+    dispositions: array(coverage.dispositions, "completeness.dispositions").map((value, index) => {
+      const disposition = record(value, `completeness.dispositions[${index}]`);
+      return {
+        event_id: safeId(disposition.event_id, `completeness.dispositions[${index}].event_id`),
+        disposition: enumValue(
+          disposition.disposition,
+          COMPLETENESS_DISPOSITIONS,
+          `completeness.dispositions[${index}].disposition`
+        ),
+        agreement_keys: safeIdArray(
+          disposition.agreement_keys,
+          `completeness.dispositions[${index}].agreement_keys`
+        ),
+        ...(disposition.reason === undefined
+          ? {}
+          : { reason: nonEmpty(disposition.reason, `completeness.dispositions[${index}].reason`) })
+      };
+    }),
+    missing_agreements: stringArray(coverage.missing_agreements, "completeness.missing_agreements"),
+    limitations: stringArray(coverage.limitations, "completeness.limitations")
+  };
+}
+
+export function parseComparableAgreementAudit(value: unknown): ComparableAgreementAudit {
+  const audit = record(value, "previous audit");
+  if (audit.version !== AGREEMENT_AUDIT_RESULT_VERSION) {
+    throw new Error(`previous audit.version must be ${AGREEMENT_AUDIT_RESULT_VERSION}`);
+  }
+  const agreements = array(audit.agreements, "previous audit.agreements").map((value, index) => {
+      const agreement = record(value, `previous audit.agreements[${index}]`);
+      return {
+        key: safeId(agreement.key, `previous audit.agreements[${index}].key`),
+        kind: enumValue(agreement.kind, AGREEMENT_KINDS, `previous audit.agreements[${index}].kind`),
+        statement: nonEmpty(agreement.statement, `previous audit.agreements[${index}].statement`),
+        state: enumValue(agreement.state, AGREEMENT_STATES, `previous audit.agreements[${index}].state`),
+        materiality: enumValue(
+          agreement.materiality,
+          AGREEMENT_MATERIALITIES,
+          `previous audit.agreements[${index}].materiality`
+        ),
+        conversation_event_ids: safeIdArray(
+          agreement.conversation_event_ids,
+          `previous audit.agreements[${index}].conversation_event_ids`
+        )
+      };
+    });
+  uniqueIds(agreements.map((agreement) => ({ id: agreement.key })), "previous audit agreement key");
+  return {
+    version: AGREEMENT_AUDIT_RESULT_VERSION,
+    repository: nonEmpty(audit.repository, "previous audit.repository"),
+    head_sha: commitSha(audit.head_sha, "previous audit.head_sha"),
+    agreements
   };
 }
 

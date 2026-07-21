@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { AGREEMENT_AUDIT_ARTIFACTS } from "../artifacts/agreement-audit";
 import { formatReports, hasRequiredFailure, runBootstrap, runInit } from "../bootstrap/init";
 import { recordCommandTranscript } from "../commands/runner";
 import { commandTranscriptInputDir } from "../commands/transcripts";
@@ -119,11 +120,22 @@ import {
   createPipelineArtifactStore,
   createPipelineArtifactStoreForCollection
 } from "../pipeline/artifact-store";
+import { integratedAgreementAuditExitCode, runIntegratedAgreementAudit } from "../audit/integrated-run";
+import {
+  acquireAgreementAuditRunLock,
+  publishAgreementAuditArtifacts
+} from "../audit/artifacts";
+import {
+  CONVERSATION_SCOPE_STATUSES,
+  type ConversationScopeStatus
+} from "../audit/contract";
+import { parseComparableAgreementAudit } from "../audit/parse";
 
 // review-surfaces.CLI.10: the canonical dispatch table. Exported so the CLI.10
 // help-honesty test can assert every command here also appears in `--help`, and
 // so the CLI.9 unknown-command path can suggest the nearest valid name.
 export const COMMANDS = [
+  "audit",
   "init",
   "bootstrap",
   "collect",
@@ -226,6 +238,8 @@ async function main(): Promise<number> {
   }
 
   switch (parsed.command) {
+    case "audit":
+      return runAgreementAudit(parsed);
     case "collect":
       await runCollect(parsed);
       return ExitCodes.success;
@@ -271,6 +285,51 @@ async function main(): Promise<number> {
       return runReviewWalkthrough(parsed);
     default:
       throw new CliError(`Unhandled command: ${parsed.command}`, ExitCodes.runtimeError);
+  }
+}
+
+async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
+  const requestedScope = stringFlag(parsed, "conversation-scope");
+  if (requestedScope && !CONVERSATION_SCOPE_STATUSES.includes(requestedScope as ConversationScopeStatus)) {
+    throw new CliError(
+      `--conversation-scope must be one of ${CONVERSATION_SCOPE_STATUSES.join(", ")}`,
+      ExitCodes.usageError
+    );
+  }
+  const config = await loadRunConfig(parsed, process.cwd());
+  const providerName = providerFlag(parsed, config);
+  if (providerName === "mock") {
+    throw new CliError(
+      "agreement audit needs structured extraction; use --provider ai-sdk or --provider agent-file --agent-input <file>",
+      ExitCodes.usageError
+    );
+  }
+  const cwd = process.cwd();
+  const previousAuditPath = stringFlag(parsed, "previous-audit");
+  const previousAudit = previousAuditPath
+    ? parseComparableAgreementAudit(await readJson(path.resolve(cwd, previousAuditPath)))
+    : undefined;
+  const outputDir = path.resolve(cwd, stringFlag(parsed, "out") ?? config.output_dir);
+  const releaseAuditLock = acquireAgreementAuditRunLock(outputDir);
+  try {
+    const { collection } = await collect(parsed, config);
+    const auditResult = await runIntegratedAgreementAudit({
+      collection,
+      provider: providerFor(providerName, {
+        model: effectiveNarrativeModel(parsed, config),
+        cwd,
+        remotePrivacyBlocked: collection.privacy.remote_provider_blocked,
+        agentInput: stringFlag(parsed, "agent-input")
+      }),
+      explicitConversationScope: requestedScope as ConversationScopeStatus | undefined,
+      extractionConfirmationToken: stringFlag(parsed, "confirm-extraction"),
+      previousAudit
+    });
+    const markdownPath = publishAgreementAuditArtifacts(collection.outputDir, auditResult.audit, { lockHeld: true });
+    console.log(`Agreement audit: ${displayPath(cwd, markdownPath)}`);
+    return integratedAgreementAuditExitCode(auditResult);
+  } finally {
+    releaseAuditLock();
   }
 }
 
@@ -346,16 +405,13 @@ function printCollectionDiagnostics(parsed: ParsedArgs, cwd: string, collection:
   debug(parsed, `output dir=${path.relative(cwd, collection.outputDir) || "."}`);
 }
 
-async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResult; config: ReviewSurfacesConfig }> {
+async function collect(
+  parsed: ParsedArgs,
+  preparedConfig?: ReviewSurfacesConfig
+): Promise<{ collection: CollectionResult; config: ReviewSurfacesConfig }> {
   const cwd = process.cwd();
-  // The exact config path loadConfig reads. Fold its content into the signature
-  // (via collectInputs) so a config edit is a cache miss; loadConfig falls back
-  // to defaults when the file is absent, and the "missing" sentinel covers that.
+  const runConfig = preparedConfig ?? await loadRunConfig(parsed, cwd);
   const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
-  const config = await loadConfig(cwd, configPath);
-  applyBudgetFlag(parsed, config);
-  const specFlag = stringFlag(parsed, "spec");
-  const runConfig = specFlag ? { ...config, specs: [specFlag] } : config;
   const provider = providerFlag(parsed, runConfig);
   // PR mode produces a DETERMINISTIC mock whole-repo packet (the live provider is
   // reserved for the diff-scoped narrative). Fold the EFFECTIVE packet provider —
@@ -386,6 +442,12 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
     model: signatureModel(parsed, runConfig, signatureProvider),
     redactSecrets: redactSecretsFlag(parsed, runConfig),
     conversationPath: stringFlag(parsed, "conversation"),
+    additionalConversationPaths: stringFlag(parsed, "additional-conversations")
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    strictConversationInputs: parsed.command === "audit",
+    strictEvidenceSnapshot: parsed.command === "audit",
     conversationFormat: conversationFormatFlag(parsed),
     conversationDiscovery: !booleanFlag(parsed, "no-conversation-discovery"),
     agentInputPath: stringFlag(parsed, "agent-input"),
@@ -400,6 +462,17 @@ async function collect(parsed: ParsedArgs): Promise<{ collection: CollectionResu
   }
   printArtifactIgnoreHint(cwd, collection.outputDir);
   return { collection, config: runConfig };
+}
+
+async function loadRunConfig(parsed: ParsedArgs, cwd: string): Promise<ReviewSurfacesConfig> {
+  // The exact config path loadConfig reads. Fold its content into the signature
+  // (via collectInputs) so a config edit is a cache miss; loadConfig falls back
+  // to defaults when the file is absent, and the "missing" sentinel covers that.
+  const configPath = stringFlag(parsed, "config") ?? "review-surfaces.config.yaml";
+  const config = await loadConfig(cwd, configPath);
+  applyBudgetFlag(parsed, config);
+  const specFlag = stringFlag(parsed, "spec");
+  return specFlag ? { ...config, specs: [specFlag] } : config;
 }
 
 // DISTRIBUTION.13: one stderr hint when the artifact dir is inside the repo
@@ -3871,6 +3944,11 @@ function flagSet(...groups: readonly (readonly string[])[]): Set<string> {
 // rejected on this command, so e.g. `all --format review` (format is a
 // comment/human flag) is a usage error rather than a silently-ignored no-op.
 const FLAGS_BY_COMMAND: Record<string, Set<string>> = {
+  audit: flagSet(
+    OUTPUT_CONFIG_FLAGS,
+    COLLECTOR_FLAGS,
+    ["command-transcripts", "test-output", "coverage", "conversation", "additional-conversations", "conversation-format", "no-conversation-discovery", "agent-input", "conversation-scope", "confirm-extraction", "previous-audit"]
+  ),
   // collect()/buildStageContext pipeline commands share PIPELINE_EXTRA_FLAGS.
   collect: flagSet(PIPELINE_EXTRA_FLAGS),
   intent: flagSet(PIPELINE_EXTRA_FLAGS),
@@ -4173,7 +4251,8 @@ function maybePrintRunSummaryJson(
 }
 
 function providerFlag(parsed: ParsedArgs, config: ReviewSurfacesConfig): ProviderName {
-  const provider = stringFlag(parsed, "provider") ?? config.llm.provider;
+  const provider = stringFlag(parsed, "provider") ??
+    (parsed.command === "audit" && config.llm.provider === "mock" ? "ai-sdk" : config.llm.provider);
   try {
     return parseProviderName(provider);
   } catch (error) {
@@ -4189,12 +4268,15 @@ function transcriptDirFromOut(parsed: ParsedArgs): string | undefined {
 function printHelp(): void {
   console.log(`review-surfaces ${VERSION}
 
-Local-first human review decision cockpit for agent-generated code changes.
+Conversation-grounded agreement audit for agent-generated code changes.
 
 Usage:
   review-surfaces <command> [options]
 
 Commands:
+  audit         Collect trusted evidence and write a verified agreement audit
+
+Legacy packet compiler commands:
   init          Scaffold config, schema, ignore, feature spec, usage skill, and AGENTS.md into this repo (create-or-validate; never clobbers without --force)
   bootstrap     Validate that the init scaffolding exists and parses (validate-only; exits 10 with --strict when a required target is missing/invalid)
   collect       Write manifest and input indexes under .review-surfaces
@@ -4273,9 +4355,16 @@ Options:
                    non-zero (evidence-validation) exit even without --post. Default off:
                    a local render writes comment.md and exits 0 (review-surfaces.RENDER.8).
   --conversation <path>
-                   Optional text/Markdown/JSONL/YAML conversation log for methodology.
-                   When omitted, the Claude Code session for this repo is auto-discovered
-                   (read-only; the picked file is announced on stderr). --conversation wins.
+                   Text/Markdown/JSONL/YAML conversation log. Audit auto-discovers the
+                   producing session when omitted; an explicit path wins.
+  --additional-conversations <paths>
+                   Audit: comma-separated later/governing transcript paths to include.
+  --conversation-scope <status>
+                   Audit: complete, partial, ambiguous, or missing. Explicit transcripts
+                   default to partial; assert complete only after checking every session.
+  --confirm-extraction <token>
+                   Audit: after reviewing the generated candidate and completeness ledgers,
+                   rerun with their ${AGREEMENT_AUDIT_ARTIFACTS.json} confirmation token to unlock a clean result.
   --conversation-format <claude-code|codex|cursor|normalized>
                    Force a raw-transcript adapter; default auto-detects by content shape
   --no-conversation-discovery
@@ -4290,7 +4379,8 @@ Options:
                    --test-output. When the path is an lcov report (or omitted), the collector also
                    auto-detects coverage/lcov.info and intersects it with the diff.
   --id <id>       Optional transcript ID for run
-  --provider <name> Optional enrichment provider: mock, ai-sdk, agent-file. Default mock
+  --provider <name> Structured provider: mock, ai-sdk, agent-file. Audit defaults to ai-sdk
+                   when config is mock; legacy packet commands remain mock by default.
   --model <model>   Optional AI SDK model as <provider>:<model>, e.g. google:gemini-2.5-flash,
                    anthropic:claude-3-5-haiku-latest, or openai:gpt-4o-mini. Google/Gemini is the
                    first-class default; no prefix (or no --model) defaults to google:gemini-2.5-flash.
@@ -4302,6 +4392,8 @@ Options:
                    Dogfood only: a prior review_packet.json (or its directory) to
                    compare against. Computes status_changes, new/resolved overreach
                    and risks, and count deltas. Absent/unreadable is a clean no-op.
+  --previous-audit <path>
+                   Audit: prior ${AGREEMENT_AUDIT_ARTIFACTS.json} used to show new, unchanged, and resolved decisions.
   --post            comment: OPTIONAL best-effort upsert of the rendered sticky comment to
                    the current PR via the gh CLI. Only acts when gh is available AND a PR
                    context is detectable; otherwise it just emits the local artifact. Never
@@ -4351,7 +4443,7 @@ Options:
   --version         Print the version and exit
   --help            Show this help
 
-Gate semantics (only enforced as exit codes with --strict):
+Legacy packet gate semantics (only enforced as exit codes with --strict):
   5  privacy block   provider is not "mock" AND the redacted diff blocked remote enrichment
   4  evidence failed any requirement result/overreach has status "invalid_evidence"
   10 quality gate    missing requirements exceed --max-missing / quality_gate.max_missing,
@@ -4359,6 +4451,10 @@ Gate semantics (only enforced as exit codes with --strict):
                      at or above the threshold severity
   The first applicable gate wins, in the order 5 -> 4 -> 10. validate is unaffected
   and keeps returning 3 on schema-validation failure.
+
+Audit exit semantics (independent of --strict):
+  5  privacy block   a remote provider cannot inspect blocked secret material
+  4  incomplete      other evidence cannot support a complete conclusion
 `);
 }
 

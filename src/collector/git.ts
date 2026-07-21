@@ -66,6 +66,18 @@ export function collectWorkingTreeSnapshot(
   return { status, paths, untracked: selectUntrackedFiles(cwd, status, isExcludedWorkingTreePath) };
 }
 
+export function hasReviewableWorkingTreeChanges(
+  snapshot: WorkingTreeSnapshot,
+  isExcluded: (filePath: string) => boolean
+): boolean {
+  if (!snapshot.status) return false;
+  return parsePorcelainStatusOutput(snapshot.status).some(({ filePath, oldPath }) =>
+    [filePath, oldPath]
+      .filter((candidate): candidate is string => Boolean(candidate) && !candidate!.endsWith("/") && candidate !== ".DS_Store")
+      .some((candidate) => !isExcluded(candidate))
+  );
+}
+
 export function collectGitInfo(cwd: string, baseRef: string, headRef: string): GitInfo {
   return {
     repo: remoteRepoName(cwd),
@@ -469,6 +481,18 @@ export function resolveGitRefSha(cwd: string, ref: string): string | undefined {
 // Returns undefined when either ref is missing or there is no common ancestor.
 export function resolveMergeBaseSha(cwd: string, baseRef: string, headRef: string): string | undefined {
   return git(cwd, ["merge-base", baseRef, headRef])?.trim();
+}
+
+export function isGitAncestor(cwd: string, ancestor: string, descendant: string): boolean {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+      cwd,
+      stdio: "ignore"
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Read a file's content at a git ref (the OLD version of a changed file), for

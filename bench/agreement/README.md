@@ -30,11 +30,26 @@ edit during prompt comparison.
 
 This calibration set and the initial prompt are introduced together, so these
 cases are score-only and not sufficient holdout evidence of product superiority.
-Live release gating starts only after an independent completeness verifier and a
-separately landed, immutable holdout version created before prompt changes or
-evaluation; prior benchmark versions stay retained.
+The separate completeness verifier and an immutable holdout now live under
+`holdout/`. They were frozen before any live comparison. Check a recorded bundle
+for shape, frozen-manifest hashes, matched arms, and output-bound preferences with:
+
+```bash
+node bin/agreement-audit.js benchmark-check \
+  --manifest bench/agreement/holdout/manifest.json \
+  --comparison /path/to/matched-results.json
+```
+
+This is deliberately an **untrusted consistency check**, not a release gate.
+Recorded scores and preferences are caller-supplied; the command cannot prove
+that model runs occurred or that reviewer judgments are authentic. Its JSON
+therefore reports `evidence_trusted: false` and never reports `passes: true`.
+Missing runs, altered manifest hashes, or missing judgments still fail the
+consistency check; prior benchmark versions stay retained.
 
 The benchmark is not complete until live outputs, adjudications, timing, token
 cost, and blinded preference are recorded. Contract tests only prove that the
-harness keeps gold out of prompts, preserves adaptive output, and enforces the
-release gates; they do not prove product superiority.
+harness keeps gold out of prompts, preserves adaptive output, and checks the
+recorded comparison rules; they do not prove product superiority. A future
+release gate must recompute scores from provenance-bound raw outputs and verify
+authenticated reviewer records.

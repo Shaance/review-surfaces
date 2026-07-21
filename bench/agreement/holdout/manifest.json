@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "cases": [
+    {
+      "id": "late-dependency-boundary",
+      "input": "cases/late-dependency-boundary.input.json",
+      "input_sha256": "83187c6b6485ec88fa25234fdaf394b376ab4fd2d613a2b451c24f99282129a0",
+      "gold": "cases/late-dependency-boundary.gold.json",
+      "gold_sha256": "f55d53f68ff0ef1f3b2dafd90c43cf69ebe10b55944a69bc05bd5782244c56c9"
+    },
+    {
+      "id": "keyboard-boundary",
+      "input": "cases/keyboard-boundary.input.json",
+      "input_sha256": "48f9ddbde767efa09608a9d9e2f4b1762a5cb3f45ab0f14fedd0cc2b5c1728ee",
+      "gold": "cases/keyboard-boundary.gold.json",
+      "gold_sha256": "d0f7fc1e575e78e541eb07c84327cec69f1b43d28723abe38dd9c3ae6a9042d8"
+    },
+    {
+      "id": "clean-timeout-validation",
+      "input": "cases/clean-timeout-validation.input.json",
+      "input_sha256": "08a21f87be7a7dc4262fbb1673804b77c792cc57ebe0abc2e226dbcd80b64511",
+      "gold": "cases/clean-timeout-validation.gold.json",
+      "gold_sha256": "b4aa9af97c8543da2a12d348502d077259e17add23ef427caa586082149924d2"
+    }
+  ]
+}

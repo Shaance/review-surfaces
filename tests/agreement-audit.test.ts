@@ -3,9 +3,17 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import type { AgreementAuditInput, AgreementCandidate } from "../src/audit/contract";
 import { groundAgreementAudit } from "../src/audit/grounding";
-import { parseAgreementAuditCandidate, parseAgreementAuditInput } from "../src/audit/parse";
+import {
+  parseAgreementAuditCandidate,
+  parseAgreementAuditInput,
+  parseAgreementCompletenessCandidate,
+  parseComparableAgreementAudit
+} from "../src/audit/parse";
 import { safeMarkdownCode, safeMarkdownEvidence } from "../src/audit/presentation-safety";
 import { renderAgreementAuditMarkdown } from "../src/audit/render";
+import { compareAgreementAuditDecisions } from "../src/audit/comparison";
+import { agreementCompletenessConfirmationToken } from "../src/audit/completeness";
+import { buildCompletenessPrompt } from "../src/audit/prompt";
 import {
   AGREEMENT_BENCH_ROOT as BENCH_ROOT,
   agreementCandidate as agreement,
@@ -96,6 +104,260 @@ test("a supporting divergence still forces a human decision and cannot render a 
   assert.match(markdown, /Diverged from the agreement/);
 });
 
+test("a rerun resolves prior decisions only after current extraction is verified", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "dependency-boundary", kind: "human_boundary", statement: "The excluded dependency was added.",
+      state: "diverged", conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const currentDecision = audit.agreements[0];
+  audit.comparison = compareAgreementAuditDecisions(audit, {
+    ...audit,
+    head_sha: "cccccccccccccccccccccccccccccccccccccccc",
+    agreements: [currentDecision, {
+      ...currentDecision,
+      key: "obsolete-decision",
+      conversation_event_ids: ["u2"]
+    }]
+  });
+  assert.deepEqual(audit.comparison.unchanged_decision_keys, ["dependency-boundary"]);
+  assert.deepEqual(audit.comparison.resolved_decision_keys, []);
+  assert.deepEqual(audit.comparison.unverified_previous_decision_keys, ["obsolete-decision"]);
+  assert.match(renderAgreementAuditMarkdown(audit), /Pending recheck: `obsolete-decision`/);
+
+  const verifiedCurrent = {
+    ...audit,
+    completeness: { ...audit.completeness, verified: true, operator_confirmed: true }
+  };
+  const verifiedComparison = compareAgreementAuditDecisions(verifiedCurrent, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [currentDecision, {
+      ...currentDecision,
+      key: "obsolete-decision",
+      conversation_event_ids: ["u2"]
+    }]
+  });
+  assert.deepEqual(verifiedComparison.resolved_decision_keys, ["obsolete-decision"]);
+  assert.deepEqual(verifiedComparison.unverified_previous_decision_keys, []);
+});
+
+test("a structurally verified but inconclusive rerun keeps prior decisions pending", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [],
+    complete: false,
+    limitations: ["Extraction stopped early."]
+  }));
+  const previousDecision = agreement({
+    key: "prior-decision",
+    statement: "The prior decision remains open.",
+    kind: "human_boundary",
+    state: "diverged",
+    conversation_event_ids: ["u1"]
+  });
+  const comparison = compareAgreementAuditDecisions(
+    { ...audit, completeness: { ...audit.completeness, verified: true, operator_confirmed: true } },
+    {
+      version: audit.version,
+      repository: audit.repository,
+      head_sha: "c".repeat(40),
+      agreements: [previousDecision]
+    }
+  );
+  assert.deepEqual(comparison.resolved_decision_keys, []);
+  assert.deepEqual(comparison.unverified_previous_decision_keys, ["prior-decision"]);
+});
+
+test("rerun comparison matches the same grounded decision when a model changes its key", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "current-dependency-key",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const comparison = compareAgreementAuditDecisions(audit, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [{ ...audit.agreements[0], key: "previous-dependency-key" }]
+  });
+  assert.deepEqual(comparison.new_decision_keys, []);
+  assert.deepEqual(comparison.unchanged_decision_keys, ["current-dependency-key"]);
+  assert.deepEqual(comparison.resolved_decision_keys, []);
+  assert.deepEqual(comparison.unverified_previous_decision_keys, []);
+});
+
+test("rerun comparison does not hide a new grounded decision behind a reused model key", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "generic-boundary",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const verifiedCurrent = {
+    ...audit,
+    completeness: { ...audit.completeness, verified: true, operator_confirmed: true }
+  };
+  const comparison = compareAgreementAuditDecisions(verifiedCurrent, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [{ ...audit.agreements[0], conversation_event_ids: ["different-event"] }]
+  });
+  assert.deepEqual(comparison.unchanged_decision_keys, []);
+  assert.deepEqual(comparison.new_decision_keys, ["generic-boundary"]);
+  assert.deepEqual(comparison.resolved_decision_keys, ["generic-boundary"]);
+  assert.deepEqual(comparison.unverified_previous_decision_keys, []);
+});
+
+test("rerun comparison surfaces a decision whose state or materiality changed", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "dependency-boundary",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      materiality: "material",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency or approve the departure."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const current = {
+    ...audit,
+    completeness: { ...audit.completeness, verified: true, operator_confirmed: true }
+  };
+  const comparison = compareAgreementAuditDecisions(current, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [{ ...audit.agreements[0], state: "unresolved", materiality: "supporting" }]
+  });
+  assert.deepEqual(comparison.unchanged_decision_keys, []);
+  assert.deepEqual(comparison.new_decision_keys, ["dependency-boundary"]);
+  assert.deepEqual(comparison.resolved_decision_keys, ["dependency-boundary"]);
+});
+
+test("rerun comparison surfaces changed decision content for the same event", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "current-decision",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const comparison = compareAgreementAuditDecisions({
+    ...audit,
+    completeness: { ...audit.completeness, verified: true, operator_confirmed: true }
+  }, {
+    ...audit,
+    head_sha: "c".repeat(40),
+    agreements: [{ ...audit.agreements[0], key: "previous-decision", statement: "The promised test was not run." }]
+  });
+  assert.deepEqual(comparison.unchanged_decision_keys, []);
+  assert.deepEqual(comparison.new_decision_keys, ["current-decision"]);
+  assert.deepEqual(comparison.resolved_decision_keys, ["previous-decision"]);
+});
+
+test("rerun comparison preserves two decisions grounded in the same user turn", () => {
+  const input = loadInput("unauthorized-scope");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Fix only the parser without a dependency.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "dependency-boundary",
+      kind: "human_boundary",
+      statement: "The excluded dependency was added.",
+      state: "diverged",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{ path: "package.json", side: "add", line: 25, contains: "new-config-parser" }],
+      reviewer_action: "Remove the dependency."
+    })],
+    complete: true,
+    limitations: []
+  }));
+  const first = audit.agreements[0];
+  const second = { ...first, key: "second-boundary" };
+  const comparison = compareAgreementAuditDecisions(
+    { ...audit, agreements: [first, second] },
+    { ...audit, head_sha: "c".repeat(40), agreements: [first, second] }
+  );
+  assert.deepEqual(comparison.unchanged_decision_keys, ["dependency-boundary", "second-boundary"]);
+  assert.deepEqual(comparison.new_decision_keys, []);
+  assert.deepEqual(comparison.resolved_decision_keys, []);
+  assert.deepEqual(comparison.unverified_previous_decision_keys, []);
+});
+
+test("previous-audit comparison rejects malformed decision history", () => {
+  assert.throws(
+    () => parseComparableAgreementAudit({
+      version: "0.2.0",
+      repository: "example/repo",
+      head_sha: "a".repeat(40),
+      agreements: [{
+        key: "decision",
+        kind: "human_instruction",
+        statement: "Implement the requested change.",
+        state: "approved",
+        materiality: "material",
+        conversation_event_ids: ["u1"]
+      }]
+    }),
+    /state must be one of/
+  );
+  assert.throws(
+    () => parseComparableAgreementAudit({
+      version: "0.2.0",
+      repository: "example/repo",
+      head_sha: "a".repeat(40),
+      agreements: ["first", "second"].map(() => ({
+        key: "duplicate-decision",
+        kind: "human_instruction",
+        statement: "Implement the requested change.",
+        state: "unresolved",
+        materiality: "material",
+        conversation_event_ids: ["u1"]
+      }))
+    }),
+    /previous audit agreement key id duplicate-decision is duplicated/
+  );
+});
+
 test("a candidate with no grounded agreements can never manufacture a clean audit", () => {
   const input = loadInput("clean-alignment");
   const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
@@ -105,6 +367,180 @@ test("a candidate with no grounded agreements can never manufacture a clean audi
     limitations: []
   }));
   assert.equal(audit.status, "cannot_audit");
+});
+
+test("the completeness pass receives conversation coverage data without retransmitting the diff", () => {
+  const input = loadInput("clean-alignment");
+  const candidate = parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the change map.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "remove-map",
+      statement: "The change map was removed.",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{
+        path: "src/render/change-map.ts",
+        side: "delete",
+        line: 1,
+        contains: "renderChangeMap"
+      }]
+    })],
+    complete: true,
+    limitations: []
+  });
+  const prompt = buildCompletenessPrompt(input, candidate);
+  assert.match(prompt, /Remove the redundant change map/);
+  assert.match(prompt, /"conversation_event_ids":\["u1"\]/);
+  assert.doesNotMatch(prompt, /"diff":/);
+  assert.doesNotMatch(prompt, /"diff_citations":/);
+  assert.doesNotMatch(prompt, /"commands":/);
+  assert.match(prompt, /Mark an event non_material only when it adds no instruction, boundary, commitment, or validation agreement/);
+  assert.match(prompt, /give a concrete reason/);
+  assert.doesNotMatch(prompt, /cannot safely declare.*non_material/);
+});
+
+test("non-material turns become trusted only after an operator confirms the exact ledgers", () => {
+  const input = loadInput("clean-alignment");
+  const candidate = parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the change map.", conversation_event_ids: ["u1"] },
+    agreements: [agreement({
+      key: "remove-map",
+      statement: "The change map was removed.",
+      conversation_event_ids: ["u1"],
+      diff_citations: [{
+        path: "src/render/change-map.ts",
+        side: "delete",
+        line: 1,
+        contains: "renderChangeMap"
+      }]
+    })],
+    complete: true,
+    limitations: []
+  });
+  const completeness = parseAgreementCompletenessCandidate({
+    complete: true,
+    dispositions: [
+      { event_id: "u1", disposition: "represented", agreement_keys: ["remove-map"] },
+      { event_id: "a1", disposition: "non_material", agreement_keys: [], reason: "Routine acknowledgement." },
+      { event_id: "u2", disposition: "non_material", agreement_keys: [], reason: "Claimed duplicate." },
+      { event_id: "a2", disposition: "non_material", agreement_keys: [], reason: "Routine acknowledgement." }
+    ],
+    missing_agreements: [],
+    limitations: []
+  });
+  const audit = groundAgreementAudit(input, candidate, completeness);
+  assert.equal(audit.status, "cannot_audit");
+  assert.equal(audit.completeness.verified, false);
+  assert.equal(audit.completeness.structurally_verified, true);
+  assert.equal(audit.completeness.rejections.length, 0);
+
+  const ledgerBytes = {
+    input: `${JSON.stringify(input)}\n`,
+    candidate: `${JSON.stringify(candidate)}\n`,
+    completeness: `${JSON.stringify(completeness)}\n`
+  };
+  const token = agreementCompletenessConfirmationToken(input, ledgerBytes);
+  const confirmed = groundAgreementAudit(input, candidate, completeness, token, ledgerBytes);
+  assert.equal(confirmed.status, "no_mismatch_found");
+  assert.equal(confirmed.completeness.verified, true);
+  assert.equal(confirmed.completeness.operator_confirmed, true);
+  const limitedCandidate = {
+    ...candidate,
+    limitations: ["The supplied evidence was truncated."]
+  };
+  const limitedLedgerBytes = {
+    ...ledgerBytes,
+    candidate: `${JSON.stringify(limitedCandidate)}\n`
+  };
+  const limitedToken = agreementCompletenessConfirmationToken(input, limitedLedgerBytes);
+  const limited = groundAgreementAudit(
+    input,
+    limitedCandidate,
+    completeness,
+    limitedToken,
+    limitedLedgerBytes
+  );
+  assert.equal(limited.status, "cannot_audit");
+  assert.equal(limited.completeness.verified, true);
+  assert.ok(limited.limitations.includes("The supplied evidence was truncated."));
+  const tampered = groundAgreementAudit(input, candidate, completeness, token, {
+    ...ledgerBytes,
+    candidate: `${ledgerBytes.candidate} `
+  });
+  assert.equal(tampered.status, "cannot_audit");
+  assert.equal(tampered.completeness.operator_confirmed, false);
+});
+
+test("a supporting unresolved human boundary still blocks a clean result", () => {
+  const input = loadInput("clean-alignment");
+  const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the map but keep the example.", conversation_event_ids: ["u1", "u2"] },
+    agreements: [
+      agreement({
+        key: "remove-map",
+        statement: "The change map was removed.",
+        conversation_event_ids: ["u1"],
+        diff_citations: [{
+          path: "src/render/change-map.ts",
+          side: "delete",
+          line: 1,
+          contains: "renderChangeMap"
+        }]
+      }),
+      agreement({
+        key: "keep-example",
+        kind: "human_boundary",
+        statement: "Keeping the written example is unresolved.",
+        state: "unresolved",
+        materiality: "supporting",
+        conversation_event_ids: ["u2"],
+        reviewer_action: "Confirm the written example remains intact."
+      })
+    ],
+    complete: true,
+    limitations: []
+  }));
+  assert.equal(audit.status, "needs_human_decision");
+  const markdown = renderAgreementAuditMarkdown(audit);
+  assert.equal(markdown.match(/Keeping the written example is unresolved\./g)?.length, 1);
+  assert.doesNotMatch(markdown, /Other uncertainty/);
+});
+
+test("every unresolved agent claim blocks a clean result regardless of materiality", () => {
+  const input = loadInput("clean-alignment");
+  for (const [kind, eventId] of [["agent_commitment", "a1"], ["validation_claim", "a2"]] as const) {
+    const audit = groundAgreementAudit(input, parseAgreementAuditCandidate({
+      final_goal: { text: "Remove the map and stale screenshot while retaining the written example.", conversation_event_ids: ["u1", "u2"] },
+      agreements: [
+        agreement({
+          key: "remove-map",
+          statement: "The change map was removed.",
+          conversation_event_ids: ["u1"],
+          diff_citations: [{ path: "src/render/change-map.ts", side: "delete", line: 1, contains: "renderChangeMap" }]
+        }),
+        agreement({
+          key: "remove-screenshot",
+          statement: "The stale screenshot was removed and the written example retained.",
+          conversation_event_ids: ["u2"],
+          diff_citations: [
+            { path: "README.md", side: "delete", line: 22, contains: "Change map" },
+            { path: "README.md", side: "context", line: 24, contains: "reviewer brief" }
+          ]
+        }),
+        agreement({
+          key: `unresolved-${kind}`,
+          kind,
+          statement: "The agent claim remains unresolved.",
+          state: "unresolved",
+          materiality: "supporting",
+          conversation_event_ids: [eventId],
+          reviewer_action: "Verify this claim before treating the audit as clean."
+        })
+      ],
+      complete: true,
+      limitations: []
+    }));
+    assert.equal(audit.status, "needs_human_decision", kind);
+  }
 });
 
 test("final-goal citations cannot replace an agreement for a human turn", () => {
@@ -124,7 +560,7 @@ test("final-goal citations cannot replace an agreement for a human turn", () => 
   assert.ok(audit.limitations.some((limitation) => /user turn.*u2/.test(limitation)));
 });
 
-test("an uncited superseded user turn does not suppress a grounded reviewer decision", () => {
+test("an uncited superseded user turn preserves the decision but blocks an exhaustive result", () => {
   const input = loadInput("late-correction");
   input.conversation.events.find((event) => event.id === "u1")!.text = "Consider removing the privacy defaults too.";
   input.conversation.events.find((event) => event.id === "u2")!.text = "No. Keep the privacy defaults and their regression tests.";
@@ -142,7 +578,8 @@ test("an uncited superseded user turn does not suppress a grounded reviewer deci
     complete: true,
     limitations: []
   }));
-  assert.equal(audit.status, "needs_human_decision");
+  assert.equal(audit.status, "cannot_audit");
+  assert.equal(audit.agreements[0].key, "privacy-boundary");
   assert.ok(audit.limitations.some((limitation) => /user turn.*u1/.test(limitation)));
 });
 
@@ -186,10 +623,121 @@ test("one broad agreement cannot manufacture a clean result by citing every user
     limitations: []
   }));
   assert.equal(audit.status, "cannot_audit");
-  assert.ok(audit.limitations.some((limitation) => /completeness was not independently verified/.test(limitation)));
+  assert.ok(audit.limitations.some((limitation) => /separate coverage pass/.test(limitation)));
   const markdown = renderAgreementAuditMarkdown(audit);
-  assert.match(markdown, /No clean alignment conclusion.*extraction completeness was not independently verified/);
+  assert.match(markdown, /No clean alignment conclusion.*separate completeness pass was not verified/);
   assert.doesNotMatch(markdown, /conversation or evidence scope is incomplete/);
+
+  const broadCandidate = parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the change map and related stale material.", conversation_event_ids: ["u1", "u2"] },
+    agreements: [
+      agreement({
+        key: "broad-user",
+        statement: "The change map was removed.",
+        conversation_event_ids: ["u1", "u2"],
+        diff_citations: [{ path: "src/render/change-map.ts", side: "delete", line: 1, contains: "renderChangeMap" }]
+      }),
+      agreement({
+        key: "broad-agent",
+        kind: "agent_commitment",
+        statement: "The agent committed to removing the change map.",
+        conversation_event_ids: ["a1", "a2"],
+        diff_citations: [{ path: "src/render/change-map.ts", side: "delete", line: 1, contains: "renderChangeMap" }]
+      })
+    ],
+    complete: true,
+    limitations: []
+  });
+  const broadCompleteness = parseAgreementCompletenessCandidate({
+    complete: true,
+    dispositions: [
+      { event_id: "u1", disposition: "represented", agreement_keys: ["broad-user"] },
+      { event_id: "u2", disposition: "represented", agreement_keys: ["broad-user"] },
+      { event_id: "a1", disposition: "represented", agreement_keys: ["broad-agent"] },
+      { event_id: "a2", disposition: "represented", agreement_keys: ["broad-agent"] }
+    ],
+    missing_agreements: [],
+    limitations: []
+  });
+  const independentlyClaimed = groundAgreementAudit(input, broadCandidate, broadCompleteness);
+  assert.equal(independentlyClaimed.status, "cannot_audit");
+  assert.equal(independentlyClaimed.completeness.verified, false);
+  assert.ok(independentlyClaimed.completeness.rejections.some((rejection) => /broad-user spans multiple/.test(rejection)));
+  assert.ok(independentlyClaimed.completeness.rejections.some((rejection) => /broad-agent spans multiple/.test(rejection)));
+});
+
+test("an independently covered clean extraction can produce a real clean result", () => {
+  const input = loadInput("clean-alignment");
+  const candidate = parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the change map and stale screenshot while retaining the written example.", conversation_event_ids: ["u1", "u2"] },
+    agreements: [
+      fulfilled("remove-map", "Remove the redundant change map.", "u1", input.diff[0]),
+      agreement({ key: "remove-map-commitment", kind: "agent_commitment", statement: "The agent committed to removing the change map.", conversation_event_ids: ["a1"], diff_citations: [citation(input.diff[0])] }),
+      agreement({ key: "keep-example", kind: "human_boundary", statement: "Keep the written reviewer brief example.", conversation_event_ids: ["u2"], diff_citations: [citation(input.diff[3])] }),
+      agreement({ key: "keep-example-commitment", kind: "agent_commitment", statement: "The agent committed to removing only the stale screenshot while retaining the written example.", conversation_event_ids: ["a2"], diff_citations: [citation(input.diff[2]), citation(input.diff[3])] })
+    ],
+    complete: true,
+    limitations: []
+  });
+  const completeness = parseAgreementCompletenessCandidate({
+    complete: true,
+    dispositions: [
+      { event_id: "u1", disposition: "represented", agreement_keys: ["remove-map"] },
+      { event_id: "a1", disposition: "represented", agreement_keys: ["remove-map-commitment"] },
+      { event_id: "u2", disposition: "represented", agreement_keys: ["keep-example"] },
+      { event_id: "a2", disposition: "represented", agreement_keys: ["keep-example-commitment"] }
+    ],
+    missing_agreements: [],
+    limitations: []
+  });
+  const ledgerBytes = {
+    input: `${JSON.stringify(input)}\n`,
+    candidate: `${JSON.stringify(candidate)}\n`,
+    completeness: `${JSON.stringify(completeness)}\n`
+  };
+  const unconfirmed = groundAgreementAudit(input, candidate, completeness, undefined, ledgerBytes);
+  assert.equal(unconfirmed.status, "cannot_audit");
+  assert.equal(unconfirmed.completeness.structurally_verified, true);
+  assert.equal(unconfirmed.completeness.operator_confirmed, false);
+  assert.ok(unconfirmed.completeness.confirmation_token);
+  const audit = groundAgreementAudit(
+    input,
+    candidate,
+    completeness,
+    unconfirmed.completeness.confirmation_token,
+    ledgerBytes
+  );
+  assert.equal(audit.status, "no_mismatch_found");
+  assert.equal(audit.completeness.verified, true);
+  const markdown = renderAgreementAuditMarkdown(audit);
+  assert.match(markdown, /No agreement mismatch found/);
+  assert.doesNotMatch(markdown, /not verified/);
+  assert.match(markdown, /https:\/\/github\.com\/example\/repo\/blob\//);
+});
+
+test("completeness verification rejects duplicate and unsupported dispositions", () => {
+  const input = loadInput("clean-alignment");
+  const candidate = parseAgreementAuditCandidate({
+    final_goal: { text: "Remove the change map.", conversation_event_ids: ["u1"] },
+    agreements: [fulfilled("remove-map", "Remove the redundant change map.", "u1", input.diff[0])],
+    complete: true,
+    limitations: []
+  });
+  const audit = groundAgreementAudit(input, candidate, parseAgreementCompletenessCandidate({
+    complete: true,
+    dispositions: [
+      { event_id: "u1", disposition: "represented", agreement_keys: ["remove-map"] },
+      { event_id: "u1", disposition: "non_material", agreement_keys: [], reason: "duplicate" },
+      { event_id: "a1", disposition: "represented", agreement_keys: ["missing-key"] },
+      { event_id: "u2", disposition: "non_material", agreement_keys: [], reason: "claimed duplicate" },
+      { event_id: "a2", disposition: "non_material", agreement_keys: [], reason: "claimed duplicate" }
+    ],
+    missing_agreements: [],
+    limitations: []
+  }));
+  assert.equal(audit.status, "cannot_audit");
+  assert.equal(audit.completeness.verified, false);
+  assert.match(audit.completeness.rejections.join(" "), /duplicate completeness dispositions|unknown agreement/);
 });
 
 test("an unchanged context line cannot prove a divergence", () => {
