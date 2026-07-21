@@ -5,7 +5,6 @@ import path from "node:path";
 import lockfile from "proper-lockfile";
 import {
   AGREEMENT_AUDIT_ARTIFACTS,
-  AGREEMENT_AUDIT_FINAL_ARTIFACTS,
   AGREEMENT_AUDIT_WORKING_ARTIFACTS
 } from "../artifacts/agreement-audit";
 import type { AgreementAudit } from "./contract";
@@ -19,12 +18,6 @@ export function writePrivateJson(file: string, value: unknown): string {
 
 export function clearAgreementAuditWorkingArtifacts(out: string): void {
   for (const name of AGREEMENT_AUDIT_WORKING_ARTIFACTS) {
-    clearAuditArtifact(out, name);
-  }
-}
-
-export function clearFinalAgreementAuditArtifacts(out: string): void {
-  for (const name of AGREEMENT_AUDIT_FINAL_ARTIFACTS) {
     clearAuditArtifact(out, name);
   }
 }

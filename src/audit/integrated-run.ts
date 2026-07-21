@@ -232,7 +232,15 @@ async function generateAgreementCandidate(
       limitation: `${explanation} Collected input remains in ${AGREEMENT_AUDIT_ARTIFACTS.input}.`
     };
   }
-  return { ok: true, candidate: parseAgreementAuditCandidate(result.data) };
+  try {
+    return { ok: true, candidate: parseAgreementAuditCandidate(result.data) };
+  } catch {
+    return {
+      ok: false,
+      privacyBlocked: false,
+      limitation: "Agreement extraction returned invalid output, so the audit could not be completed."
+    };
+  }
 }
 
 function hasAuditableConversation(collection: CollectionResult): boolean {

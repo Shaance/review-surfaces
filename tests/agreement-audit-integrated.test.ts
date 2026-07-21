@@ -281,8 +281,8 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
       "--out", completeOut
     ], { cwd: repo, encoding: "utf8" });
     assert.equal(corruptConfirmation.status, 1);
-    assert.equal(fs.existsSync(path.join(completeOut, "audit.json")), false);
-    assert.equal(fs.existsSync(path.join(completeOut, "audit.md")), false);
+    assert.equal(fs.readFileSync(path.join(completeOut, "audit.json"), "utf8"), priorPublishedJson);
+    assert.equal(fs.readFileSync(path.join(completeOut, "audit.md"), "utf8"), priorPublishedMarkdown);
     fs.writeFileSync(path.join(completeOut, "agreement-audit-completeness.json"), confirmedCompleteness);
     const restoredConfirmation = spawnSync(process.execPath, [
       ...auditArgs,
@@ -323,10 +323,15 @@ test("review-surfaces audit collects, verifies, and renders a clean result in on
     const failedExtraction = spawnSync(process.execPath, [
       ...auditArgs, "--conversation-scope", "complete", "--out", completeOut
     ], { cwd: repo, encoding: "utf8" });
-    assert.equal(failedExtraction.status, 1);
+    assert.equal(failedExtraction.status, 4, failedExtraction.stderr);
     assert.ok(fs.existsSync(path.join(completeOut, "agreement-audit-input.json")));
     assert.equal(fs.existsSync(path.join(completeOut, "agreement-audit-candidate.json")), false);
-    assert.equal(fs.existsSync(path.join(completeOut, "audit.json")), false);
+    const failedExtractionAudit = JSON.parse(
+      fs.readFileSync(path.join(completeOut, "audit.json"), "utf8")
+    ) as { status: string; limitations: string[] };
+    assert.equal(failedExtractionAudit.status, "cannot_audit");
+    assert.ok(failedExtractionAudit.limitations.some((limitation) => /extraction returned invalid output/i.test(limitation)));
+    assert.match(fs.readFileSync(path.join(completeOut, "audit.md"), "utf8"), /## Audit incomplete/);
 
     fs.writeFileSync(
       path.join(repo, "greeting.ts"),

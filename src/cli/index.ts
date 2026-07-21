@@ -123,7 +123,6 @@ import {
 import { integratedAgreementAuditExitCode, runIntegratedAgreementAudit } from "../audit/integrated-run";
 import {
   acquireAgreementAuditRunLock,
-  clearFinalAgreementAuditArtifacts,
   publishAgreementAuditArtifacts
 } from "../audit/artifacts";
 import {
@@ -312,11 +311,8 @@ async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
     : undefined;
   const outputDir = path.resolve(cwd, stringFlag(parsed, "out") ?? config.output_dir);
   const releaseAuditLock = acquireAgreementAuditRunLock(outputDir);
-  let collectionCompleted = false;
-  let publicationStarted = false;
   try {
     const { collection } = await collect(parsed, config);
-    collectionCompleted = true;
     const auditResult = await runIntegratedAgreementAudit({
       collection,
       provider: providerFor(providerName, {
@@ -329,13 +325,9 @@ async function runAgreementAudit(parsed: ParsedArgs): Promise<number> {
       extractionConfirmationToken: stringFlag(parsed, "confirm-extraction"),
       previousAudit
     });
-    publicationStarted = true;
     const markdownPath = publishAgreementAuditArtifacts(collection.outputDir, auditResult.audit, { lockHeld: true });
     console.log(`Agreement audit: ${displayPath(cwd, markdownPath)}`);
     return integratedAgreementAuditExitCode(auditResult);
-  } catch (error) {
-    if (collectionCompleted && !publicationStarted) clearFinalAgreementAuditArtifacts(outputDir);
-    throw error;
   } finally {
     releaseAuditLock();
   }
